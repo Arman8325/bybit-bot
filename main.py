@@ -1,5 +1,10 @@
 import telebot
 import os
+from pybit.unified_trading import HTTP
+session = HTTP(
+    api_key=os.getenv("BYBIT_API_KEY"),
+    api_secret=os.getenv("BYBIT_API_SECRET")
+)
 
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 
