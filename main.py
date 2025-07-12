@@ -1,13 +1,17 @@
-import telebot
 import os
+import telebot
 from pybit.unified_trading import HTTP
+
+# Инициализация Telegram-бота
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
+
+# Инициализация сессии Bybit
 session = HTTP(
     api_key=os.getenv("BYBIT_API_KEY"),
     api_secret=os.getenv("BYBIT_API_SECRET")
 )
 
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-
+# Обработка команды /signal
 @bot.message_handler(commands=['signal'])
 def get_signal(message):
     try:
@@ -39,4 +43,5 @@ def get_signal(message):
 
     bot.send_message(message.chat.id, "Бот работает! 🚀")
 
+# Запуск бота
 bot.polling()
