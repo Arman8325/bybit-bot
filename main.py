@@ -1,5 +1,4 @@
-# Railway альтернатива Render для запуска Telegram-трейдинг-бота
-# Этот код будет частью backend-приложения, которое мы разместим в Railway (работает из Армении без VPN)
+
 
 from flask import Flask, request
 import telebot
