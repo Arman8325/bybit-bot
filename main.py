@@ -1,65 +1,72 @@
-import telebot
 import os
+import telebot
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from pybit.unified_trading import HTTP
+import openai
 from dotenv import load_dotenv
 
-load_dotenv()  # Загрузка переменных из .env файла
+load_dotenv()
 
-# Инициализация бота
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+# Инициализация
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
+session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+# Кнопки
+keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+keyboard.add(KeyboardButton("/signal"), KeyboardButton("/status"), KeyboardButton("/help"))
 
-# Инициализация Bybit-сессии
-session = HTTP(
-    api_key=BYBIT_API_KEY,
-    api_secret=BYBIT_API_SECRET
-)
+@bot.message_handler(commands=['start', 'help'])
+def welcome(message):
+    bot.send_message(
+        message.chat.id,
+        "👋 Привет! Я твой торговый бот.\nНажми /signal для получения рекомендации.\n/status — для проверки состояния.",
+        reply_markup=keyboard
+    )
 
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal, чтобы получить рекомендацию.")
+@bot.message_handler(commands=['status'])
+def status(message):
+    bot.send_message(message.chat.id, "✅ Бот активен и готов к анализу!")
 
 @bot.message_handler(commands=['signal'])
-def signal_command(message):
+def get_signal(message):
     try:
         bot.send_message(message.chat.id, "⏳ Получаю данные от Bybit...")
+        candles = session.get_kline(category="linear", symbol="BTCUSDT", interval="15", limit=100)
 
-        candles = session.get_kline(
-            category="linear",
-            symbol="BTCUSDT",
-            interval="15",
-            limit=3
-        )
-
-        candle_list = candles['result']['list']
-        if len(candle_list) < 2:
-            bot.send_message(message.chat.id, "❌ Недостаточно данных для анализа.")
+        if 'result' not in candles or 'list' not in candles['result']:
+            bot.send_message(message.chat.id, "❌ Не удалось получить данные с Bybit.")
             return
 
-        last = float(candle_list[-1][4])   # Закрытие последней свечи
-        prev = float(candle_list[-2][4])   # Закрытие предыдущей свечи
+        last = candles['result']['list'][-1]
+        prev = candles['result']['list'][-2]
 
-        if last > prev:
-            signal = "🔺 LONG (вверх)"
-        elif last < prev:
-            signal = "🔻 SHORT (вниз)"
-        else:
-            signal = "➖ Боковое движение"
+        close = float(last[4])
+        prev_close = float(prev[4])
 
-        response = (
-            f"📊 Закрытие: {last}\n"
-            f"📉 Предыдущее: {prev}\n"
-            f"📌 Сигнал: {signal}"
+        # Подготовка текста для ChatGPT
+        prompt = f"""
+        Анализируй последние свечи с Bybit:
+        - Последнее закрытие: {close}
+        - Предыдущее закрытие: {prev_close}
+        - Таймфрейм: 15 минут
+
+        Выводи только направление: LONG (вверх) или SHORT (вниз), а также краткое объяснение.
+        """
+
+        chat_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
         )
 
-        bot.send_message(message.chat.id, response)
+        result = chat_response['choices'][0]['message']['content']
+        bot.send_message(message.chat.id, f"📈 Сигнал от ChatGPT:\n{result}")
 
     except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
+        bot.send_message(message.chat.id, f"⚠️ Ошибка анализа:\n{str(e)}")
 
-# Запуск бота
+# Запуск
 bot.polling()
 
+
+       
