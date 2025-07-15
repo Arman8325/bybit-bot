@@ -1,86 +1,50 @@
-import os
 import telebot
+import os
 from pybit.unified_trading import HTTP
-import openai
-import talib
-import numpy as np
 
-# Получаем ключи из переменных окружения
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# Создаём сессию Bybit
+session = HTTP(
+    api_key=os.getenv("BYBIT_API_KEY"),
+    api_secret=os.getenv("BYBIT_API_SECRET")
+)
 
-# Проверка на пустые токены
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN is missing")
-if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-    raise ValueError("Bybit API credentials are missing")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is missing")
+# Создаём Telegram-бота
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 
-# Инициализация
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
-openai.api_key = OPENAI_API_KEY
-
-# Обработчик /start
 @bot.message_handler(commands=['start'])
 def start_message(message):
     bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal, чтобы получить рекомендацию.")
 
-# Обработчик /signal
 @bot.message_handler(commands=['signal'])
 def get_signal(message):
-    bot.send_message(message.chat.id, "⏳ Получаю данные от Bybit...")
     try:
+        bot.send_message(message.chat.id, "\u23f3 Получаю данные от Bybit...")
+
         candles = session.get_kline(
             category="linear",
             symbol="BTCUSDT",
             interval="15",
-            limit=100
+            limit=2
         )
-        data = candles['result']['list']
-        closes = np.array([float(item[4]) for item in data])
 
-        rsi = talib.RSI(closes, timeperiod=14)
-        macd, signal, _ = talib.MACD(closes)
-        last_rsi = round(rsi[-1], 2)
-        last_macd = round(macd[-1] - signal[-1], 2)
-        last_close = closes[-1]
-        prev_close = closes[-2]
+        candle_list = candles['result']['list']
+        last_close = float(candle_list[-1][4])
+        prev_close = float(candle_list[-2][4])
 
-        # Формируем промпт для ChatGPT
-        prompt = f"""
-        Analyze this market data:
-        - Last Close: {last_close}
-        - Previous Close: {prev_close}
-        - RSI: {last_rsi}
-        - MACD Histogram: {last_macd}
-        Suggest if the next 15 min candle likely goes LONG or SHORT and why.
-        Answer in brief.
-        """
-
-        response = openai.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        advice = response.choices[0].message.content
+        if last_close > prev_close:
+            signal = "\ud83d\udd39 LONG (вверх)"
+        elif last_close < prev_close:
+            signal = "\ud83d\udd3b SHORT (вниз)"
+        else:
+            signal = "➖ Без изменений"
 
         bot.send_message(
             message.chat.id,
-            f"\U0001F4C8 Закрытие: {last_close}\n"
-            f"\U0001F4C9 Предыдущее: {prev_close}\n"
-            f"ℹ️ RSI: {last_rsi}\n"
-            f"📈 MACD Histogram: {last_macd}\n"
-            f"\n🤖 ChatGPT Анализ: {advice}"
+            f"\ud83d\udcca Последняя свеча: {last_close}\n\ud83d\udcc9 Предыдущая: {prev_close}\n\ud83d\udcc8 Сигнал: {signal}"
         )
 
     except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Ошибка анализа: {e}")
+        bot.send_message(message.chat.id, f"⚠️ Ошибка при получении сигнала: {str(e)}")
 
-# Запуск бота
 bot.polling()
 
-
-       
