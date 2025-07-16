@@ -37,6 +37,7 @@ def send_signal(message):
         if data is None:
             raise ValueError("Не удалось получить данные с Bybit.")
 
+        # Используем только нужные колонки
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
 
         df["close"] = df["close"].astype(float)
@@ -44,10 +45,17 @@ def send_signal(message):
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
 
-        # RSI, EMA, SMA
+        # RSI и EMA
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+
+        # SMA
         sma = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator().iloc[-1]
+
+        # MACD
+        macd = ta.trend.MACD(df["close"])
+        macd_line = macd.macd().iloc[-1]
+        macd_signal = macd.macd_signal().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -59,12 +67,14 @@ def send_signal(message):
         else:
             signal = "➖ Без изменений"
 
+        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema, 2)}
-📉 SMA50: {round(sma, 2)}
+📈 SMA50: {round(sma, 2)}
+📉 MACD: {round(macd_line, 2)} / Сигнал: {round(macd_signal, 2)}
 📌 Сигнал: {signal}
         """)
 
