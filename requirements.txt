@@ -1,4 +1,6 @@
 pyTelegramBotAPI
 pybit
 numpy
-TA-Lib
+pandas
+pandas-ta
+
