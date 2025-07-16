@@ -37,31 +37,21 @@ def send_signal(message):
         if data is None:
             raise ValueError("Не удалось получить данные с Bybit.")
 
-        # Создаём DataFrame с нужными колонками
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
-        df = df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
 
-        # Основные значения
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+
+        # RSI, EMA, SMA
+        rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
+        ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+        sma = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator().iloc[-1]
+
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
-        # Индикаторы с безопасной обработкой
-        try:
-            rsi = round(ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1], 2)
-        except:
-            rsi = "n/a"
-
-        try:
-            ema = round(ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1], 2)
-        except:
-            ema = "n/a"
-
-        try:
-            sma = round(ta.trend.SMAIndicator(df["close"], window=21).sma_indicator().iloc[-1], 2)
-        except:
-            sma = "n/a"
-
-        # Направление
         if last_close > prev_close:
             signal = "🔺 LONG"
         elif last_close < prev_close:
@@ -69,13 +59,12 @@ def send_signal(message):
         else:
             signal = "➖ Без изменений"
 
-        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
-📊 RSI: {rsi}
-📈 EMA21: {ema}
-📉 SMA21: {sma}
+📊 RSI: {round(rsi, 2)}
+📈 EMA21: {round(ema, 2)}
+📉 SMA50: {round(sma, 2)}
 📌 Сигнал: {signal}
         """)
 
