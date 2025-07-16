@@ -18,7 +18,7 @@ def start_message(message):
 @bot.message_handler(commands=['signal'])
 def get_signal(message):
     try:
-        bot.send_message(message.chat.id, "\u23f3 Получаю данные от Bybit...")
+        bot.send_message(message.chat.id, "⏳ Получаю данные от Bybit...")
 
         candles = session.get_kline(
             category="linear",
@@ -32,18 +32,21 @@ def get_signal(message):
         prev_close = float(candle_list[-2][4])
 
         if last_close > prev_close:
-            signal = "\ud83d\udd39 LONG (вверх)"
+            signal = "🔺 LONG (вверх)"
         elif last_close < prev_close:
-            signal = "\ud83d\udd3b SHORT (вниз)"
+            signal = "🔻 SHORT (вниз)"
         else:
             signal = "➖ Без изменений"
 
-        bot.send_message(
-            message.chat.id,
-            f"\ud83d\udcca Последняя свеча: {last_close}\n\ud83d\udcc9 Предыдущая: {prev_close}\n\ud83d\udcc8 Сигнал: {signal}"
+        message_text = (
+            f"📊 Последняя свеча: {last_close}\n"
+            f"📉 Предыдущая: {prev_close}\n"
+            f"📈 Сигнал: {signal}"
         )
 
+        bot.send_message(message.chat.id, message_text)
+
     except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Ошибка при получении сигнала: {str(e)}")
+        bot.send_message(message.chat.id, f"⚠️ Ошибка при получении сигнала:\n{str(e)}")
 
 bot.polling()
