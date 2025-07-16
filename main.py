@@ -1,20 +1,18 @@
 import telebot
-import openai
 import numpy as np
 import talib
 from pybit.unified_trading import HTTP
 
-# Временно вставленные ключи напрямую (для теста)
+# Временно вставленные токены (замени своими при необходимости)
 TELEGRAM_BOT_TOKEN = "7725284250:AAFQi1jp4yWefZJExHlXOoLQWEPLdrnuk4w"
 BYBIT_API_KEY = "IyFHgr8YtnCz60D27D"
 BYBIT_API_SECRET = "kxj3fry4US9lZq2nyDZIVKMgSaTd7U7vPp53"
-OPENAI_API_KEY = "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"
 
 # Инициализация
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
-openai.api_key = OPENAI_API_KEY
 
+# Получение данных свечей
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     try:
         response = session.get_kline(
@@ -23,12 +21,12 @@ def get_candles(symbol="BTCUSDT", interval="15", limit=100):
             interval=interval,
             limit=limit
         )
-        if not response.get("result") or not response["result"].get("list"):
-            return None
         return response["result"]["list"]
     except Exception as e:
+        print("Ошибка получения свечей:", e)
         return None
 
+# Анализ индикаторов без ChatGPT
 def analyze_indicators(candle_data):
     closes = np.array([float(c[4]) for c in candle_data], dtype=float)
     highs = np.array([float(c[2]) for c in candle_data], dtype=float)
@@ -36,11 +34,17 @@ def analyze_indicators(candle_data):
     volumes = np.array([float(c[5]) for c in candle_data], dtype=float)
 
     rsi = talib.RSI(closes, timeperiod=14)[-1]
-    macd, macdsignal, _ = talib.MACD(closes, fastperiod=12, slowperiod=26, signalperiod=9)
-    ema9 = talib.EMA(closes, timeperiod=9)[-1]
-    ema21 = talib.EMA(closes, timeperiod=21)[-1]
-    sma50 = talib.SMA(closes, timeperiod=50)[-1]
-    upper, middle, lower = talib.BBANDS(closes, timeperiod=20)
+    macd, macdsignal, _ = talib.MACD(closes)
+    ema_fast = talib.EMA(closes, timeperiod=9)[-1]
+    ema_slow = talib.EMA(closes, timeperiod=21)[-1]
+
+    # Простой вывод сигнала
+    if rsi > 70 and ema_fast < ema_slow and macd[-1] < macdsignal[-1]:
+        signal = "🔻 SHORT (вниз)"
+    elif rsi < 30 and ema_fast > ema_slow and macd[-1] > macdsignal[-1]:
+        signal = "🔺 LONG (вверх)"
+    else:
+        signal = "➖ NEUTRAL (вне рынка)"
 
     return {
         "close": closes[-1],
@@ -48,65 +52,35 @@ def analyze_indicators(candle_data):
         "rsi": round(rsi, 2),
         "macd": round(macd[-1], 2),
         "macd_signal": round(macdsignal[-1], 2),
-        "ema9": round(ema9, 2),
-        "ema21": round(ema21, 2),
-        "sma50": round(sma50, 2),
+        "ema9": round(ema_fast, 2),
+        "ema21": round(ema_slow, 2),
         "volume": round(volumes[-1], 2),
-        "bb_upper": round(upper[-1], 2),
-        "bb_middle": round(middle[-1], 2),
-        "bb_lower": round(lower[-1], 2)
+        "signal": signal
     }
 
-def chatgpt_analysis(indicators):
-    prompt = f"""
-    Дай торговую рекомендацию на 15 минут на основе следующих индикаторов:
-    - Цена закрытия: {indicators['close']}
-    - Предыдущая цена: {indicators['previous']}
-    - RSI: {indicators['rsi']}
-    - MACD: {indicators['macd']}, сигнал MACD: {indicators['macd_signal']}
-    - EMA9: {indicators['ema9']}, EMA21: {indicators['ema21']}
-    - SMA50: {indicators['sma50']}
-    - Объём: {indicators['volume']}
-    - Полосы Боллинджера: Верхняя {indicators['bb_upper']}, Средняя {indicators['bb_middle']}, Нижняя {indicators['bb_lower']}
-    Выводи: LONG / SHORT / NEUTRAL и объяснение.
-    """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты торговый аналитик Bybit."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"⚠️ Ошибка анализа ChatGPT:\n{str(e)}"
-
+# Обработка команды /signal
 @bot.message_handler(commands=['signal'])
 def get_signal(message):
     bot.send_message(message.chat.id, "⏳ Получаю данные от Bybit...")
-    candle_data = get_candles()
-    if candle_data is None:
-        bot.send_message(message.chat.id, "❌ Ошибка получения данных от Bybit")
+    candles = get_candles()
+    if not candles:
+        bot.send_message(message.chat.id, "⚠️ Не удалось получить данные от Bybit")
         return
 
-    indicators = analyze_indicators(candle_data)
-    response = chatgpt_analysis(indicators)
+    indicators = analyze_indicators(candles)
 
-    formatted = f"""
+    reply = f"""
 📊 Закрытие: {indicators['close']}
 📉 Предыдущее: {indicators['previous']}
 ℹ️ RSI: {indicators['rsi']}
 📉 MACD: {indicators['macd']}, сигнал: {indicators['macd_signal']}
 📈 EMA9: {indicators['ema9']}, EMA21: {indicators['ema21']}
-📊 SMA50: {indicators['sma50']}
-📊 Volume: {indicators['volume']}
-📎 Bollinger Bands: Верхняя {indicators['bb_upper']}, Средняя {indicators['bb_middle']}, Нижняя {indicators['bb_lower']}
-🔎 Рекомендация ChatGPT:
-{response}
+📊 Объём: {indicators['volume']}
+📌 Сигнал: {indicators['signal']}
     """
-    bot.send_message(message.chat.id, formatted)
+    bot.send_message(message.chat.id, reply)
 
-print("✅ Бот запущен. Ожидаю команду /signal")
-bot.polling(none_stop=True)
+# Запуск бота
+print("✅ Бот запущен!")
+bot.polling()
 
