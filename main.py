@@ -4,7 +4,7 @@ import talib
 from pybit.unified_trading import HTTP
 
 # Временно вставленные токены (замени своими при необходимости)
-TELEGRAM_BOT_TOKEN = "7725284250:AAFQi1jp4yWefZJExHlXOoLQWEPLdrnuk4w"
+TELEGRAM_BOT_TOKEN = 7725284250:AAFQi1jp4yWefZJExHlXOoLQWEPLdrnuk4w
 BYBIT_API_KEY = "IyFHgr8YtnCz60D27D"
 BYBIT_API_SECRET = "kxj3fry4US9lZq2nyDZIVKMgSaTd7U7vPp53"
 
