@@ -37,15 +37,20 @@ def send_signal(message):
         if data is None:
             raise ValueError("Не удалось получить данные с Bybit.")
 
-        # Используем только нужные колонки
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
 
         df["close"] = df["close"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
         df["volume"] = df["volume"].astype(float)
 
-        # RSI и EMA
+        # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+        macd = ta.trend.MACD(df["close"]).macd_diff().iloc[-1]
+        bb = ta.volatility.BollingerBands(df["close"])
+        bb_upper = bb.bollinger_hband().iloc[-1]
+        bb_lower = bb.bollinger_lband().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -63,6 +68,8 @@ def send_signal(message):
 📉 Предыдущая: {prev_close}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema, 2)}
+📊 MACD: {round(macd, 2)}
+📎 Bollinger Bands: Верхняя {round(bb_upper, 2)}, Нижняя {round(bb_lower, 2)}
 📌 Сигнал: {signal}
         """)
 
