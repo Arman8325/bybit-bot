@@ -1,19 +1,19 @@
 import telebot
-import os
-from pybit.unified_trading import HTTP
 import openai
-import talib
 import numpy as np
-import time
+import talib
+from pybit.unified_trading import HTTP
 
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
+# Временно вставленные ключи напрямую (для теста)
+TELEGRAM_BOT_TOKEN = "7725284250:AAFQi1jp4yWefZJExHlXOoLQWEPLdrnuk4w"
+BYBIT_API_KEY = "IyFHgr8YtnCz60D27D"
+BYBIT_API_SECRET = "kxj3fry4US9lZq2nyDZIVKMgSaTd7U7vPp53"
+OPENAI_API_KEY = "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"
 
-session = HTTP(
-    api_key=os.getenv("BYBIT_API_KEY"),
-    api_secret=os.getenv("BYBIT_API_SECRET")
-)
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Инициализация
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
+openai.api_key = OPENAI_API_KEY
 
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     try:
@@ -68,7 +68,6 @@ def chatgpt_analysis(indicators):
     - SMA50: {indicators['sma50']}
     - Объём: {indicators['volume']}
     - Полосы Боллинджера: Верхняя {indicators['bb_upper']}, Средняя {indicators['bb_middle']}, Нижняя {indicators['bb_lower']}
-    
     Выводи: LONG / SHORT / NEUTRAL и объяснение.
     """
     try:
@@ -108,5 +107,6 @@ def get_signal(message):
     """
     bot.send_message(message.chat.id, formatted)
 
-bot.polling()
+print("✅ Бот запущен. Ожидаю команду /signal")
+bot.polling(none_stop=True)
 
