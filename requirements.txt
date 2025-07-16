@@ -1,6 +1,4 @@
 pyTelegramBotAPI
 pybit
-numpy
 pandas
-pandas-ta
-
+ta
