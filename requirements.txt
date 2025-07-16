@@ -1,4 +1,4 @@
 pyTelegramBotAPI
 pybit
-openai
-
+numpy
+TA-Lib
