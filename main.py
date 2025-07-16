@@ -27,25 +27,23 @@ def send_signal(message):
 
     try:
         data = get_candles()
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "turnover", "confirm", "cross", "timestamp_end", "interval", "symbol"
-        ])
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
+df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+df["close"] = df["close"].astype(float)
+df["volume"] = df["volume"].astype(float)
 
-        # Индикаторы
-        rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
-        ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+# Индикаторы
+rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
+ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
 
-        last_close = df["close"].iloc[-1]
-        prev_close = df["close"].iloc[-2]
+last_close = df["close"].iloc[-1]
+prev_close = df["close"].iloc[-2]
 
-        direction = "➖ Без изменений"
-        if last_close > prev_close:
-            direction = "🔺 LONG"
-        elif last_close < prev_close:
-            direction = "🔻 SHORT"
+direction = "➖ Без изменений"
+if last_close > prev_close:
+    direction = "🔺 LONG"
+elif last_close < prev_close:
+    direction = "🔻 SHORT"
+
 
         # Ответ
         bot.send_message(message.chat.id, f"""
