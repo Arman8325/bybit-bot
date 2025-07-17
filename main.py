@@ -42,10 +42,8 @@ def send_signal(message):
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
 
-        # Индикаторы
-        stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"])
-        stoch_k = stoch.stoch().iloc[-1]
-        stoch_d = stoch.stoch_signal().iloc[-1]
+        # Индикатор Momentum
+        momentum = ta.momentum.MomentumIndicator(df["close"]).momentum().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -55,9 +53,7 @@ def send_signal(message):
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
-📊 Stochastic Oscillator:
-%K = {round(stoch_k, 2)}
-%D = {round(stoch_d, 2)}
+⚡ Momentum: {round(momentum, 2)}
 📌 Сигнал: {signal}
         """)
 
