@@ -37,21 +37,15 @@ def send_signal(message):
         if data is None:
             raise ValueError("Не удалось получить данные с Bybit.")
 
+        # Используем только нужные колонки
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
 
-        df[["close", "high", "low", "volume"]] = df[["close", "high", "low", "volume"]].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
 
-        # Индикаторы
+        # RSI и EMA
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
-        sma = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator().iloc[-1]
-        macd = ta.trend.MACD(df["close"]).macd_diff().iloc[-1]
-        bb = ta.volatility.BollingerBands(df["close"])
-        bb_mavg = bb.bollinger_mavg().iloc[-1]
-        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
-        cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
-        stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
-        mom = ta.momentum.MomentumIndicator(df["close"]).momentum().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -69,13 +63,6 @@ def send_signal(message):
 📉 Предыдущая: {prev_close}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema, 2)}
-📉 SMA50: {round(sma, 2)}
-📉 MACD Diff: {round(macd, 2)}
-📉 Bollinger MA: {round(bb_mavg, 2)}
-📊 ADX: {round(adx, 2)}
-📊 CCI: {round(cci, 2)}
-📉 Stochastic: {round(stoch, 2)}
-📊 Momentum: {round(mom, 2)}
 📌 Сигнал: {signal}
         """)
 
