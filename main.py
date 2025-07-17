@@ -42,8 +42,8 @@ def send_signal(message):
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
 
-        # Индикатор Momentum
-        momentum = ta.momentum.MomentumIndicator(df["close"]).momentum().iloc[-1]
+        # Индикатор CCI
+        cci = ta.trend.CCIIndicator(high=df["high"], low=df["low"], close=df["close"], window=20).cci().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -53,7 +53,7 @@ def send_signal(message):
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
-⚡ Momentum: {round(momentum, 2)}
+📊 CCI: {round(cci, 2)}
 📌 Сигнал: {signal}
         """)
 
