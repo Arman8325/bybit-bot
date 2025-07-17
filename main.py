@@ -57,6 +57,18 @@ def send_signal(message):
         macd_line = macd.macd().iloc[-1]
         macd_signal = macd.macd_signal().iloc[-1]
 
+        # SMA(20)
+        sma20 = ta.trend.SMAIndicator(df["close"], window=20).sma_indicator().iloc[-1]
+
+        # Bollinger Bands
+        bb = ta.volatility.BollingerBands(df["close"], window=20, window_dev=2)
+        bb_upper = bb.bollinger_hband().iloc[-1]
+        bb_middle = bb.bollinger_mavg().iloc[-1]
+        bb_lower = bb.bollinger_lband().iloc[-1]
+
+        # CCI
+        cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"], window=20).cci().iloc[-1]
+
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
@@ -74,8 +86,12 @@ def send_signal(message):
 📈 EMA21: {round(ema21, 2)}
 📊 ADX: {round(adx, 2)}
 📉 MACD: {round(macd_line, 2)} / сигнал: {round(macd_signal, 2)}
+📉 SMA(20): {round(sma20, 2)}
+📎 BB: Верхняя {round(bb_upper, 2)}, Средняя {round(bb_middle, 2)}, Нижняя {round(bb_lower, 2)}
+📉 CCI: {round(cci, 2)}
 📌 Сигнал: {signal}
         """)
+
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
