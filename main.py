@@ -37,7 +37,6 @@ def send_signal(message):
         if data is None:
             raise ValueError("Не удалось получить данные с Bybit.")
 
-        # Используем нужные колонки
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
         df["close"] = df["close"].astype(float)
         df["high"] = df["high"].astype(float)
@@ -47,26 +46,23 @@ def send_signal(message):
         # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
-        sma = ta.trend.SMAIndicator(df["close"], window=20).sma_indicator().iloc[-1]
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
-        macd = ta.trend.MACD(df["close"])
-        macd_line = macd.macd().iloc[-1]
-        macd_signal = macd.macd_signal().iloc[-1]
+        cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
+        stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
+        momentum = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
         bb = ta.volatility.BollingerBands(df["close"])
         bb_upper = bb.bollinger_hband().iloc[-1]
-        bb_middle = bb.bollinger_mavg().iloc[-1]
         bb_lower = bb.bollinger_lband().iloc[-1]
 
-        # Направление
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
         if last_close > prev_close:
-            direction = "🔺 LONG"
+            signal = "🔺 LONG"
         elif last_close < prev_close:
-            direction = "🔻 SHORT"
+            signal = "🔻 SHORT"
         else:
-            direction = "➖ Без изменений"
+            signal = "➖ Без изменений"
 
         # Ответ
         bot.send_message(message.chat.id, f"""
@@ -74,15 +70,16 @@ def send_signal(message):
 📉 Предыдущая: {prev_close}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema, 2)}
-📉 SMA20: {round(sma, 2)}
 📊 ADX: {round(adx, 2)}
-📉 MACD: {round(macd_line, 2)}, Сигнал: {round(macd_signal, 2)}
-📉 Bollinger Bands:
-   ▸ Верхняя: {round(bb_upper, 2)}
-   ▸ Средняя: {round(bb_middle, 2)}
-   ▸ Нижняя: {round(bb_lower, 2)}
-📌 Сигнал: {direction}
+📊 CCI: {round(cci, 2)}
+📊 Stochastic: {round(stoch, 2)}
+📊 Momentum: {round(momentum, 2)}
+📊 Bollinger Bands:
+   🔺 Верхняя: {round(bb_upper, 2)}
+   🔻 Нижняя: {round(bb_lower, 2)}
+📌 Сигнал: {signal}
         """)
+
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
