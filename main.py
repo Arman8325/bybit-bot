@@ -39,23 +39,21 @@ def send_signal(message):
 
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
         df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
+        df["volume"] = df["volume"].astype(float)
 
-        # RSI, EMA, ADX, CCI, Stochastic, Momentum уже были добавлены
+        # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
         cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
-        stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
+        stochastic = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
         mom = ta.momentum.MomentumIndicator(df["close"]).momentum().iloc[-1]
-
-        # ✅ Новый индикатор — Bollinger Bands
         bb = ta.volatility.BollingerBands(df["close"])
         bb_upper = bb.bollinger_hband().iloc[-1]
-        bb_middle = bb.bollinger_mavg().iloc[-1]
         bb_lower = bb.bollinger_lband().iloc[-1]
+        williams = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -67,17 +65,19 @@ def send_signal(message):
         else:
             signal = "➖ Без изменений"
 
-        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
-📊 RSI: {round(rsi, 2)} | EMA21: {round(ema, 2)}
-📉 ADX: {round(adx, 2)} | CCI: {round(cci, 2)}
-📈 Stochastic: {round(stoch, 2)} | Momentum: {round(mom, 2)}
-📎 Bollinger Bands:
-   🔼 Верхняя: {round(bb_upper, 2)}
-   🔹 Средняя: {round(bb_middle, 2)}
-   🔽 Нижняя: {round(bb_lower, 2)}
+📊 RSI: {round(rsi, 2)}
+📈 EMA21: {round(ema, 2)}
+📊 ADX: {round(adx, 2)}
+📊 CCI: {round(cci, 2)}
+📊 Stochastic: {round(stochastic, 2)}
+📊 Momentum: {round(mom, 2)}
+📊 Bollinger Bands:
+   🔺 Верхняя: {round(bb_upper, 2)}
+   🔻 Нижняя: {round(bb_lower, 2)}
+📊 Williams %R: {round(williams, 2)}
 📌 Сигнал: {signal}
         """)
 
