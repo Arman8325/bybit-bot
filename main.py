@@ -35,20 +35,19 @@ def send_signal(message):
     try:
         data = get_candles()
         if data is None:
-            raise ValueError("Не удалось получить данные с Bybit.")
+            raise ValueError("❌ Не удалось получить данные с Bybit.")
 
+        # Используем нужные колонки
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
         df["close"] = df["close"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
         df["volume"] = df["volume"].astype(float)
 
         # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
-        ema21 = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
-        sma20 = ta.trend.SMAIndicator(df["close"], window=20).sma_indicator().iloc[-1]
-        bb = ta.volatility.BollingerBands(df["close"], window=20)
-        bb_upper = bb.bollinger_hband().iloc[-1]
-        bb_lower = bb.bollinger_lband().iloc[-1]
-        bb_middle = bb.bollinger_mavg().iloc[-1]
+        ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -65,14 +64,11 @@ def send_signal(message):
 📈 Закрытие: {last_close}
 📉 Предыдущая: {prev_close}
 📊 RSI: {round(rsi, 2)}
-📈 EMA21: {round(ema21, 2)}
-📊 SMA20: {round(sma20, 2)}
-📎 Bollinger Bands:
-🔺 Верхняя: {round(bb_upper, 2)}
-📊 Средняя: {round(bb_middle, 2)}
-🔻 Нижняя: {round(bb_lower, 2)}
+📈 EMA21: {round(ema, 2)}
+📊 ADX: {round(adx, 2)} (сила тренда)
 📌 Сигнал: {signal}
         """)
+
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
