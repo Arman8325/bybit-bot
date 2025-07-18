@@ -6,26 +6,18 @@ import ta
 
 # Инициализация
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-session = HTTP(
-    api_key=os.getenv("BYBIT_API_KEY"),
-    api_secret=os.getenv("BYBIT_API_SECRET")
-)
+session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     try:
-        candles = session.get_kline(
-            category="linear",
-            symbol=symbol,
-            interval=interval,
-            limit=limit
-        )
+        candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
         return candles["result"]["list"]
     except:
         return None
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal для прогноза.")
+    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal для прогноза на следующие 15 минут.")
 
 @bot.message_handler(commands=['signal'])
 def signal_handler(message):
@@ -56,7 +48,7 @@ def signal_handler(message):
         bb_lower = bb.bollinger_lband().iloc[-1]
         williams = ta.momentum.WilliamsRIndicator(high, low, close).williams_r().iloc[-1]
 
-        # Прогноз по индикаторам
+        # Логика прогноза
         long_votes = 0
         short_votes = 0
 
@@ -69,15 +61,14 @@ def signal_handler(message):
         if close.iloc[-1] > sma20: long_votes += 1
         else: short_votes += 1
 
-        if adx > 25:
-            if close.iloc[-1] > close.iloc[-2]: long_votes += 1
-            else: short_votes += 1
+        if adx > 25 and close.iloc[-1] > close.iloc[-2]: long_votes += 1
+        elif adx > 25 and close.iloc[-1] < close.iloc[-2]: short_votes += 1
 
         if cci > 100: long_votes += 1
         elif cci < -100: short_votes += 1
 
-        if stoch > 80: short_votes += 1
-        elif stoch < 20: long_votes += 1
+        if stoch < 20: long_votes += 1
+        elif stoch > 80: short_votes += 1
 
         if momentum > 0: long_votes += 1
         else: short_votes += 1
@@ -88,18 +79,17 @@ def signal_handler(message):
         if williams < -80: long_votes += 1
         elif williams > -20: short_votes += 1
 
-        # Финальное решение
-        if long_votes > short_votes:
-            decision = "🔺 LONG (вверх)"
-        elif short_votes > long_votes:
-            decision = "🔻 SHORT (вниз)"
+        # Финальный прогноз
+        if long_votes >= 6:
+            forecast = "🔮 Прогноз: LONG в следующие 15 минут"
+        elif short_votes >= 6:
+            forecast = "🔮 Прогноз: SHORT в следующие 15 минут"
         else:
-            decision = "⚪️ NEUTRAL"
+            forecast = "🔮 Прогноз: NEUTRAL (неопределённость)"
 
-        # Ответ
+        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {close.iloc[-1]}
-📉 Предыдущее: {close.iloc[-2]}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema21, 2)}
 📈 SMA20: {round(sma20, 2)}
@@ -107,12 +97,12 @@ def signal_handler(message):
 📊 CCI: {round(cci, 2)}
 📊 Stochastic: {round(stoch, 2)}
 📊 Momentum: {round(momentum, 2)}
-📊 Bollinger Bands:
+📊 Bollinger:
    🔺 Верхняя: {round(bb_upper, 2)}
    🔻 Нижняя: {round(bb_lower, 2)}
 📊 Williams %R: {round(williams, 2)}
 
-📌 Прогноз на 15 мин: {decision}
+📌 {forecast}
         """)
 
     except Exception as e:
