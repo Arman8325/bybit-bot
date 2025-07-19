@@ -6,19 +6,12 @@ import ta
 
 # Инициализация бота и сессии
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-
-session = HTTP(
-    api_key=os.getenv("BYBIT_API_KEY"),
-    api_secret=os.getenv("BYBIT_API_SECRET")
-)
+session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     try:
         candles = session.get_kline(
-            category="linear",
-            symbol=symbol,
-            interval=interval,
-            limit=limit
+            category="linear", symbol=symbol, interval=interval, limit=limit
         )
         return candles["result"]["list"]
     except Exception as e:
@@ -26,7 +19,7 @@ def get_candles(symbol="BTCUSDT", interval="15", limit=100):
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен! Используй команду /signal для получения сигнала.")
+    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal для прогноза на следующие 15 минут.")
 
 @bot.message_handler(commands=['signal'])
 def send_signal(message):
@@ -43,7 +36,7 @@ def send_signal(message):
         df["low"] = df["low"].astype(float)
         df["volume"] = df["volume"].astype(float)
 
-        # Технические индикаторы
+        # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
@@ -51,27 +44,62 @@ def send_signal(message):
         stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
         momentum = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
         bb = ta.volatility.BollingerBands(df["close"])
-        bb_upper = bb.bollinger_hband().iloc[-1]
-        bb_lower = bb.bollinger_lband().iloc[-1]
         bb_mid = bb.bollinger_mavg().iloc[-1]
         psar = ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1]
-
-        # ✅ Добавляем MACD
-        macd_indicator = ta.trend.MACD(df["close"])
-        macd_line = macd_indicator.macd().iloc[-1]
-        signal_line = macd_indicator.macd_signal().iloc[-1]
+        macd = ta.trend.MACD(df["close"])
+        macd_line = macd.macd().iloc[-1]
+        signal_line = macd.macd_signal().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
-        if last_close > prev_close:
-            signal = "🔺 LONG (вверх)"
-        elif last_close < prev_close:
-            signal = "🔻 SHORT (вниз)"
-        else:
-            signal = "⚪️ NEUTRAL"
+        # 🔍 Логика прогноза
+        score = 0
+        reasons = []
 
-        # Ответ пользователю
+        if rsi < 30:
+            score += 1
+            reasons.append("RSI < 30 → перепроданность (возможен рост)")
+        elif rsi > 70:
+            score -= 1
+            reasons.append("RSI > 70 → перекупленность (возможен спад)")
+
+        if last_close > ema:
+            score += 1
+            reasons.append("Цена выше EMA → восходящий тренд")
+        else:
+            score -= 1
+            reasons.append("Цена ниже EMA → нисходящий тренд")
+
+        if macd_line > signal_line:
+            score += 1
+            reasons.append("MACD > сигнальной линии → бычий импульс")
+        else:
+            score -= 1
+            reasons.append("MACD < сигнальной линии → медвежий импульс")
+
+        if momentum > 0:
+            score += 1
+            reasons.append("Momentum положительный → ускорение роста")
+        else:
+            score -= 1
+            reasons.append("Momentum отрицательный → ослабление движения")
+
+        if adx > 20:
+            score += 1
+            reasons.append("ADX > 20 → есть тренд")
+        else:
+            reasons.append("ADX < 20 → рынок слабый/флэт")
+
+        # 🧠 Прогноз на следующие 15 минут
+        if score >= 2:
+            forecast = "🔮 Прогноз: LONG (рост в ближайшие 15 минут)"
+        elif score <= -2:
+            forecast = "🔮 Прогноз: SHORT (падение в ближайшие 15 минут)"
+        else:
+            forecast = "🔮 Прогноз: NEUTRAL (неопределённость)"
+
+        # Ответ
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущее: {prev_close}
@@ -84,7 +112,12 @@ def send_signal(message):
 📊 Bollinger Mid: {round(bb_mid, 2)}
 📊 SAR: {round(psar, 2)}
 📊 MACD: {round(macd_line, 2)} | Сигнальная: {round(signal_line, 2)}
-📌 Сигнал: {signal}
+📌 Текущий сигнал: {"🔺 LONG" if last_close > prev_close else "🔻 SHORT" if last_close < prev_close else "⚪️ NEUTRAL"}
+
+{forecast}
+
+📋 Причины прогноза:
+- {chr(10).join(reasons)}
         """)
 
     except Exception as e:
