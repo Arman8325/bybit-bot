@@ -4,105 +4,88 @@ from pybit.unified_trading import HTTP
 import pandas as pd
 import ta
 
-# Инициализация бота и сессии
+# Инициализация
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-
-session = HTTP(
-    api_key=os.getenv("BYBIT_API_KEY"),
-    api_secret=os.getenv("BYBIT_API_SECRET")
-)
+session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     try:
-        candles = session.get_kline(
-            category="linear",
-            symbol=symbol,
-            interval=interval,
-            limit=limit
-        )
+        candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
         return candles["result"]["list"]
-    except Exception:
+    except:
         return None
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal для получения сигнала.")
+    bot.send_message(message.chat.id, "✅ Бот запущен! Используй команду /signal для прогноза рынка.")
 
 @bot.message_handler(commands=['signal'])
 def send_signal(message):
-    bot.send_message(message.chat.id, "📊 Получаю данные от Bybit...")
+    bot.send_message(message.chat.id, "📊 Анализирую рынок по 15 индикаторам...")
 
     try:
         data = get_candles()
         if data is None:
-            raise ValueError("Не удалось получить данные с Bybit.")
+            raise ValueError("Не удалось получить данные с Bybit")
 
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
         df = df.astype(float)
 
         # Индикаторы
-        rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
-        ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
-        ma = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator().iloc[-1]  # MA
-        adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
-        cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
-        stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
-        momentum = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
-        sma20 = ta.trend.SMAIndicator(df["close"], window=20).sma_indicator().iloc[-1]
-        bb = ta.volatility.BollingerBands(df["close"])
+        close = df["close"]
+        high = df["high"]
+        low = df["low"]
+        volume = df["volume"]
+
+        rsi = ta.momentum.RSIIndicator(close).rsi().iloc[-1]
+        ema = ta.trend.EMAIndicator(close, window=21).ema_indicator().iloc[-1]
+        sma = ta.trend.SMAIndicator(close, window=20).sma_indicator().iloc[-1]
+        adx = ta.trend.ADXIndicator(high, low, close).adx().iloc[-1]
+        cci = ta.trend.CCIIndicator(high, low, close).cci().iloc[-1]
+        stoch = ta.momentum.StochasticOscillator(high, low, close).stoch().iloc[-1]
+        momentum = ta.momentum.ROCIndicator(close).roc().iloc[-1]
+        bb = ta.volatility.BollingerBands(close)
         bb_upper = bb.bollinger_hband().iloc[-1]
         bb_lower = bb.bollinger_lband().iloc[-1]
-        wr = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
-        mavol = df["volume"].rolling(window=20).mean().iloc[-1]
-        kdj_k = stoch  # KDJ ≈ Stochastic %K
-        stoch_rsi = ta.momentum.StochRSIIndicator(df["close"]).stochrsi().iloc[-1]
+        mavol = volume.rolling(window=20).mean().iloc[-1]
+        macd = ta.trend.MACD(close).macd_diff().iloc[-1]
+        sar = ta.trend.PSARIndicator(high, low, close).psar().iloc[-1]
+        wr = ta.momentum.WilliamsRIndicator(high, low, close).williams_r().iloc[-1]
+        stoch_rsi = ta.momentum.StochRSIIndicator(close).stochrsi().iloc[-1]
+        kdj = (stoch + stoch_rsi) / 2
 
-        last_close = df["close"].iloc[-1]
-        prev_close = df["close"].iloc[-2]
+        last_close = close.iloc[-1]
+        prev_close = close.iloc[-2]
 
-        # Логика принятия решений
-        signal = "⚪️ NEUTRAL"
+        # Логика сигнала
         reasons = []
+        if last_close > ema: reasons.append("Цена выше EMA21")
+        if rsi > 55: reasons.append("RSI показывает силу")
+        if adx > 20: reasons.append("ADX подтверждает тренд")
+        if macd > 0: reasons.append("MACD бычий")
+        if sar < last_close: reasons.append("SAR под ценой")
 
-        if last_close > ema and last_close > ma and rsi > 50 and adx > 20 and wr > -50:
-            signal = "🔺 LONG (вверх)"
-            reasons += ["Цена выше EMA", "Цена выше MA", "RSI > 50", "ADX > 20", "WR > -50"]
-        elif last_close < ema and last_close < ma and rsi < 50 and adx > 20 and wr < -50:
-            signal = "🔻 SHORT (вниз)"
-            reasons += ["Цена ниже EMA", "Цена ниже MA", "RSI < 50", "ADX > 20", "WR < -50"]
-
-        # Прогноз
-        prediction_text = "📈 Прогноз: В следующие 15 минут, вероятно, "
-        if signal.startswith("🔺"):
-            prediction_text += "цена пойдёт вверх."
-        elif signal.startswith("🔻"):
-            prediction_text += "цена пойдёт вниз."
+        if last_close > prev_close and len(reasons) >= 3:
+            direction = "🔺 LONG (вверх)"
+        elif last_close < prev_close and (rsi < 45 or macd < 0 or sar > last_close):
+            direction = "🔻 SHORT (вниз)"
         else:
-            prediction_text += "изменения будут незначительными."
+            direction = "⚪️ NEUTRAL"
 
-        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущее: {prev_close}
-📊 RSI: {round(rsi, 2)}
-📈 EMA21: {round(ema, 2)}
-📈 MA50: {round(ma, 2)}
-📊 ADX: {round(adx, 2)}
-📊 CCI: {round(cci, 2)}
-📊 Stochastic: {round(stoch, 2)}
-📊 Momentum: {round(momentum, 2)}
-📊 SMA20: {round(sma20, 2)}
-📊 Williams %R: {round(wr, 2)}
-📊 MAVOL(20): {round(mavol, 2)}
-📊 KDJ (K): {round(kdj_k, 2)}
-📊 StochRSI: {round(stoch_rsi, 2)}
-📊 Bollinger Bands:
-   🔺 Верхняя: {round(bb_upper, 2)}
-   🔻 Нижняя: {round(bb_lower, 2)}
-📌 Сигнал: {signal}
-📣 Причины: {', '.join(reasons) if reasons else 'Недостаточно подтверждений'}
-{prediction_text}
+📊 RSI: {round(rsi, 2)} | EMA21: {round(ema, 2)}
+📊 ADX: {round(adx, 2)} | CCI: {round(cci, 2)}
+📊 Stoch: {round(stoch, 2)} | Momentum: {round(momentum, 2)}
+📊 BB: 🔺 {round(bb_upper, 2)} 🔻 {round(bb_lower, 2)}
+📊 MAVOL: {round(mavol, 2)} | MACD: {round(macd, 2)}
+📊 SAR: {round(sar, 2)} | WR: {round(wr, 2)}
+📊 StochRSI: {round(stoch_rsi, 2)} | KDJ: {round(kdj, 2)}
+📌 Прогноз на 15 минут: {direction}
+📎 Причины: {'; '.join(reasons) if reasons else 'нет явных причин'}
         """)
+
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
