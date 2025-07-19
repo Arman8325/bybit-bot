@@ -53,26 +53,28 @@ def send_signal(message):
         bb_lower = bb.bollinger_lband().iloc[-1]
         wr = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
         mavol = df["volume"].rolling(window=20).mean().iloc[-1]
-        kdj_k = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
+        kdj_k = stoch  # KDJ ≈ Stochastic %K
         stoch_rsi = ta.momentum.StochRSIIndicator(df["close"]).stochrsi().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
-        # Простая логика сигнала
+        # Логика принятия решений
         signal = "⚪️ NEUTRAL"
         reasons = []
 
-        if last_close > ema and rsi > 50 and adx > 20:
+        if last_close > ema and rsi > 50 and adx > 20 and wr > -50:
             signal = "🔺 LONG (вверх)"
-            reasons.append("EMA < цена")
+            reasons.append("Цена выше EMA")
             reasons.append("RSI > 50")
             reasons.append("ADX > 20")
-        elif last_close < ema and rsi < 50 and adx > 20:
+            reasons.append("WR > -50 (не перепродан)")
+        elif last_close < ema and rsi < 50 and adx > 20 and wr < -50:
             signal = "🔻 SHORT (вниз)"
-            reasons.append("EMA > цена")
+            reasons.append("Цена ниже EMA")
             reasons.append("RSI < 50")
             reasons.append("ADX > 20")
+            reasons.append("WR < -50 (перепродан)")
 
         prediction_text = "📈 Прогноз: В следующие 15 минут, вероятно, "
         if signal.startswith("🔺"):
@@ -80,8 +82,9 @@ def send_signal(message):
         elif signal.startswith("🔻"):
             prediction_text += "цена пойдёт вниз."
         else:
-            prediction_text += "сильного движения не ожидается."
+            prediction_text += "изменения незначительные."
 
+        # Ответ
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущее: {prev_close}
@@ -100,7 +103,7 @@ def send_signal(message):
    🔺 Верхняя: {round(bb_upper, 2)}
    🔻 Нижняя: {round(bb_lower, 2)}
 📌 Сигнал: {signal}
-📣 Причины: {", ".join(reasons) if reasons else 'Нет чётких подтверждений'}
+📣 Причины: {", ".join(reasons) if reasons else 'Недостаточно подтверждений'}
 {prediction_text}
         """)
     except Exception as e:
