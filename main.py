@@ -43,6 +43,7 @@ def send_signal(message):
         # Индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+        ma = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator().iloc[-1]  # MA
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
         cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
         stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
@@ -63,33 +64,29 @@ def send_signal(message):
         signal = "⚪️ NEUTRAL"
         reasons = []
 
-        if last_close > ema and rsi > 50 and adx > 20 and wr > -50:
+        if last_close > ema and last_close > ma and rsi > 50 and adx > 20 and wr > -50:
             signal = "🔺 LONG (вверх)"
-            reasons.append("Цена выше EMA")
-            reasons.append("RSI > 50")
-            reasons.append("ADX > 20")
-            reasons.append("WR > -50 (не перепродан)")
-        elif last_close < ema and rsi < 50 and adx > 20 and wr < -50:
+            reasons += ["Цена выше EMA", "Цена выше MA", "RSI > 50", "ADX > 20", "WR > -50"]
+        elif last_close < ema and last_close < ma and rsi < 50 and adx > 20 and wr < -50:
             signal = "🔻 SHORT (вниз)"
-            reasons.append("Цена ниже EMA")
-            reasons.append("RSI < 50")
-            reasons.append("ADX > 20")
-            reasons.append("WR < -50 (перепродан)")
+            reasons += ["Цена ниже EMA", "Цена ниже MA", "RSI < 50", "ADX > 20", "WR < -50"]
 
+        # Прогноз
         prediction_text = "📈 Прогноз: В следующие 15 минут, вероятно, "
         if signal.startswith("🔺"):
             prediction_text += "цена пойдёт вверх."
         elif signal.startswith("🔻"):
             prediction_text += "цена пойдёт вниз."
         else:
-            prediction_text += "изменения незначительные."
+            prediction_text += "изменения будут незначительными."
 
-        # Ответ
+        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущее: {prev_close}
 📊 RSI: {round(rsi, 2)}
 📈 EMA21: {round(ema, 2)}
+📈 MA50: {round(ma, 2)}
 📊 ADX: {round(adx, 2)}
 📊 CCI: {round(cci, 2)}
 📊 Stochastic: {round(stoch, 2)}
@@ -103,7 +100,7 @@ def send_signal(message):
    🔺 Верхняя: {round(bb_upper, 2)}
    🔻 Нижняя: {round(bb_lower, 2)}
 📌 Сигнал: {signal}
-📣 Причины: {", ".join(reasons) if reasons else 'Недостаточно подтверждений'}
+📣 Причины: {', '.join(reasons) if reasons else 'Недостаточно подтверждений'}
 {prediction_text}
         """)
     except Exception as e:
