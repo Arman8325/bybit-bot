@@ -14,7 +14,7 @@ def get_candles(symbol="BTCUSDT", interval="15", limit=100):
             category="linear", symbol=symbol, interval=interval, limit=limit
         )
         return candles["result"]["list"]
-    except Exception as e:
+    except Exception:
         return None
 
 @bot.message_handler(commands=['start'])
@@ -43,26 +43,26 @@ def send_signal(message):
         cci = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
         stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
         momentum = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
-        bb = ta.volatility.BollingerBands(df["close"])
-        bb_mid = bb.bollinger_mavg().iloc[-1]
+        bb_mid = ta.volatility.BollingerBands(df["close"]).bollinger_mavg().iloc[-1]
         psar = ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1]
         macd = ta.trend.MACD(df["close"])
         macd_line = macd.macd().iloc[-1]
         signal_line = macd.macd_signal().iloc[-1]
+        mavol = df["volume"].rolling(window=20).mean().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
-        # 🔍 Логика прогноза
+        # Прогнозная логика
         score = 0
         reasons = []
 
         if rsi < 30:
             score += 1
-            reasons.append("RSI < 30 → перепроданность (возможен рост)")
+            reasons.append("RSI < 30 → перепроданность")
         elif rsi > 70:
             score -= 1
-            reasons.append("RSI > 70 → перекупленность (возможен спад)")
+            reasons.append("RSI > 70 → перекупленность")
 
         if last_close > ema:
             score += 1
@@ -80,18 +80,25 @@ def send_signal(message):
 
         if momentum > 0:
             score += 1
-            reasons.append("Momentum положительный → ускорение роста")
+            reasons.append("Momentum положительный")
         else:
             score -= 1
-            reasons.append("Momentum отрицательный → ослабление движения")
+            reasons.append("Momentum отрицательный")
 
         if adx > 20:
             score += 1
-            reasons.append("ADX > 20 → есть тренд")
+            reasons.append("ADX > 20 → сильный тренд")
         else:
-            reasons.append("ADX < 20 → рынок слабый/флэт")
+            reasons.append("ADX < 20 → слабый тренд")
 
-        # 🧠 Прогноз на следующие 15 минут
+        if df["volume"].iloc[-1] > mavol:
+            score += 1
+            reasons.append("Объём выше MAVOL → подтверждение")
+        else:
+            score -= 1
+            reasons.append("Объём ниже MAVOL → слабый интерес")
+
+        # Финальный прогноз
         if score >= 2:
             forecast = "🔮 Прогноз: LONG (рост в ближайшие 15 минут)"
         elif score <= -2:
@@ -111,12 +118,13 @@ def send_signal(message):
 📊 Momentum: {round(momentum, 2)}
 📊 Bollinger Mid: {round(bb_mid, 2)}
 📊 SAR: {round(psar, 2)}
-📊 MACD: {round(macd_line, 2)} | Сигнальная: {round(signal_line, 2)}
-📌 Текущий сигнал: {"🔺 LONG" if last_close > prev_close else "🔻 SHORT" if last_close < prev_close else "⚪️ NEUTRAL"}
+📊 MACD: {round(macd_line, 2)} / Signal: {round(signal_line, 2)}
+📊 MAVOL: {round(mavol, 2)}
+📌 Сигнал: {"🔺 LONG" if last_close > prev_close else "🔻 SHORT" if last_close < prev_close else "⚪️ NEUTRAL"}
 
 {forecast}
 
-📋 Причины прогноза:
+📋 Причины:
 - {chr(10).join(reasons)}
         """)
 
