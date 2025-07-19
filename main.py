@@ -54,9 +54,12 @@ def send_signal(message):
         bb_upper = bb.bollinger_hband().iloc[-1]
         bb_lower = bb.bollinger_lband().iloc[-1]
         bb_mid = bb.bollinger_mavg().iloc[-1]
-
-        # ✅ Добавляем Parabolic SAR
         psar = ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1]
+
+        # ✅ Добавляем MACD
+        macd_indicator = ta.trend.MACD(df["close"])
+        macd_line = macd_indicator.macd().iloc[-1]
+        signal_line = macd_indicator.macd_signal().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
@@ -80,6 +83,7 @@ def send_signal(message):
 📊 Momentum: {round(momentum, 2)}
 📊 Bollinger Mid: {round(bb_mid, 2)}
 📊 SAR: {round(psar, 2)}
+📊 MACD: {round(macd_line, 2)} | Сигнальная: {round(signal_line, 2)}
 📌 Сигнал: {signal}
         """)
 
