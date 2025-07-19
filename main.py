@@ -43,7 +43,7 @@ def send_signal(message):
         df["low"] = df["low"].astype(float)
         df["volume"] = df["volume"].astype(float)
 
-        # Индикаторы
+        # Технические индикаторы
         rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
         ema = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
         adx = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
@@ -51,36 +51,24 @@ def send_signal(message):
         stoch = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
         momentum = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
         bb = ta.volatility.BollingerBands(df["close"])
+        bb_upper = bb.bollinger_hband().iloc[-1]
+        bb_lower = bb.bollinger_lband().iloc[-1]
         bb_mid = bb.bollinger_mavg().iloc[-1]
+
+        # ✅ Добавляем Parabolic SAR
+        psar = ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1]
 
         last_close = df["close"].iloc[-1]
         prev_close = df["close"].iloc[-2]
 
-        # Сигнал на текущий момент
         if last_close > prev_close:
             signal = "🔺 LONG (вверх)"
         elif last_close < prev_close:
             signal = "🔻 SHORT (вниз)"
         else:
-            signal = "➖ Без изменений"
+            signal = "⚪️ NEUTRAL"
 
-        # Прогноз на следующие 15 минут
-        forecast = "NEUTRAL"
-        reasons = []
-
-        if adx > 20:
-            if momentum > 0 and rsi > 55 and cci > 50 and last_close > ema:
-                forecast = "LONG"
-                reasons.append("Цена выше EMA, индикаторы показывают силу роста")
-            elif momentum < 0 and rsi < 45 and cci < -50 and last_close < ema:
-                forecast = "SHORT"
-                reasons.append("Цена ниже EMA, индикаторы указывают на снижение")
-            else:
-                reasons.append("Несовпадение индикаторов, нет ясного сигнала")
-        else:
-            forecast = "NEUTRAL"
-            reasons.append("ADX < 20 — слабый тренд, возможен флэт")
-
+        # Ответ пользователю
         bot.send_message(message.chat.id, f"""
 📈 Закрытие: {last_close}
 📉 Предыдущее: {prev_close}
@@ -91,9 +79,8 @@ def send_signal(message):
 📊 Stochastic: {round(stoch, 2)}
 📊 Momentum: {round(momentum, 2)}
 📊 Bollinger Mid: {round(bb_mid, 2)}
+📊 SAR: {round(psar, 2)}
 📌 Сигнал: {signal}
-🔮 Прогноз на следующие 15 минут: {forecast}
-ℹ️ Причина прогноза: {', '.join(reasons)}
         """)
 
     except Exception as e:
