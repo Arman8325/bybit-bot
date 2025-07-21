@@ -1,42 +1,43 @@
 import telebot
 import os
-import sqlite3
-from datetime import datetime, timedelta
 from pybit.unified_trading import HTTP
 import pandas as pd
 import ta
+import sqlite3
+from datetime import datetime, timedelta
+import time
 
-# Инициализация переменных окружения
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+# Инициализация
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
+session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
-# Инициализация бота и сессии Bybit
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-session = HTTP(api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
-
-# Инициализация базы данных SQLite
-conn = sqlite3.connect("predictions.db", check_same_thread=False)
+# Подключение к SQLite
+conn = sqlite3.connect("prediction_stats.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS predictions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     timestamp TEXT,
-    close_price REAL,
+    close REAL,
     signal TEXT,
     votes TEXT,
-    result_price REAL,
-    accuracy TEXT
-)
+    verified INTEGER DEFAULT 0,
+    result TEXT
+);
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS accuracy (
+    indicator TEXT PRIMARY KEY,
+    correct INTEGER,
+    incorrect INTEGER
+);
 """)
 conn.commit()
 
-# Получение свечей
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     return candles["result"]["list"]
 
-# Анализ индикаторов
 def analyze_indicators(df):
     results = {}
     df["close"] = df["close"].astype(float)
@@ -60,7 +61,6 @@ def analyze_indicators(df):
     results["WR"] = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
     return results
 
-# Логика прогноза
 def make_prediction(indicators, last_close):
     votes = []
 
@@ -118,24 +118,22 @@ def make_prediction(indicators, last_close):
 
     return signal, votes
 
-# Команда /start
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен. Используй /signal для прогноза.")
+    bot.send_message(message.chat.id, "✅ Бот запущен! Используй команду /signal для прогноза.")
 
-# Команда /signal
 @bot.message_handler(commands=['signal'])
 def send_signal(message):
     try:
-        data = get_candles()
-        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+        raw_data = get_candles()
+        df = pd.DataFrame(raw_data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
         indicators = analyze_indicators(df)
         last_close = float(df["close"].iloc[-1])
         prev_close = float(df["close"].iloc[-2])
         signal, votes = make_prediction(indicators, last_close)
 
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO predictions (timestamp, close_price, signal, votes) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO predictions (timestamp, close, signal, votes) VALUES (?, ?, ?, ?)",
                        (timestamp, last_close, signal, ",".join(votes)))
         conn.commit()
 
@@ -149,53 +147,22 @@ def send_signal(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
-# Команда /verify - проверить точность предыдущих прогнозов
-@bot.message_handler(commands=['verify'])
-def verify_predictions(message):
+@bot.message_handler(commands=['accuracy'])
+def send_accuracy(message):
     try:
-        cursor.execute("SELECT id, timestamp, close_price, signal FROM predictions WHERE result_price IS NULL")
+        cursor.execute("SELECT indicator, correct, incorrect FROM accuracy")
         rows = cursor.fetchall()
-        now = datetime.utcnow()
-
-        updated = 0
+        if not rows:
+            bot.send_message(message.chat.id, "📊 Пока нет статистики точности.")
+            return
+        response = "📈 Точность индикаторов:\n"
         for row in rows:
-            pid, ts_str, close_price, signal = row
-            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-            if now - ts >= timedelta(minutes=15):
-                # Получить фактическую цену
-                candles = get_candles(limit=1)
-                result_price = float(candles[-1][4])  # close
-
-                # Определить точность
-                if signal == "LONG" and result_price > close_price:
-                    accuracy = "✅"
-                elif signal == "SHORT" and result_price < close_price:
-                    accuracy = "✅"
-                elif signal == "NEUTRAL":
-                    accuracy = "N/A"
-                else:
-                    accuracy = "❌"
-
-                cursor.execute("UPDATE predictions SET result_price = ?, accuracy = ? WHERE id = ?",
-                               (result_price, accuracy, pid))
-                updated += 1
-        conn.commit()
-
-        bot.send_message(message.chat.id, f"🔍 Обновлено прогнозов: {updated}")
-
+            name, correct, incorrect = row
+            total = correct + incorrect
+            acc = round(100 * correct / total, 2) if total > 0 else 0
+            response += f"🔸 {name}: {acc}% (✅ {correct} / ❌ {incorrect})\n"
+        bot.send_message(message.chat.id, response)
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка при проверке: {str(e)}")
-
-# Команда /stats
-@bot.message_handler(commands=['stats'])
-def send_stats(message):
-    cursor.execute("SELECT COUNT(*), SUM(accuracy = '✅'), SUM(accuracy = '❌') FROM predictions WHERE accuracy IS NOT NULL")
-    total, correct, incorrect = cursor.fetchone()
-    correct = correct or 0
-    incorrect = incorrect or 0
-    bot.send_message(
-        message.chat.id,
-        f"📊 Всего проверено: {total}\n✅ Верных: {correct}\n❌ Ошибочных: {incorrect}"
-    )
+        bot.send_message(message.chat.id, f"⚠️ Ошибка при получении точности: {str(e)}")
 
 bot.polling(none_stop=True)
