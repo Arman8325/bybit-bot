@@ -3,29 +3,35 @@ import os
 from pybit.unified_trading import HTTP
 import pandas as pd
 import ta
-from datetime import datetime, timedelta
 import sqlite3
-import threading
+from datetime import datetime, timedelta
 import time
 
-# Инициализация бота и сессии
+# Инициализация
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
-# Подключение к базе данных
-conn = sqlite3.connect("signals.db", check_same_thread=False)
+# Подключение к SQLite
+conn = sqlite3.connect("prediction_stats.db", check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS predictions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        close REAL,
-        signal TEXT,
-        verified INTEGER DEFAULT 0,
-        result TEXT,
-        votes TEXT
-    )
-''')
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY,
+    timestamp TEXT,
+    close REAL,
+    signal TEXT,
+    votes TEXT,
+    verified INTEGER DEFAULT 0,
+    result TEXT
+);
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS accuracy (
+    indicator TEXT PRIMARY KEY,
+    correct INTEGER,
+    incorrect INTEGER
+);
+""")
 conn.commit()
 
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
@@ -37,6 +43,7 @@ def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
+    df["volume"] = df["volume"].astype(float)
 
     results["RSI"] = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
     results["EMA21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
@@ -52,7 +59,6 @@ def analyze_indicators(df):
     results["MACD"] = ta.trend.MACD(df["close"]).macd().iloc[-1]
     results["KDJ"] = results["Stochastic"]
     results["WR"] = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
-
     return results
 
 def make_prediction(indicators, last_close):
@@ -114,7 +120,7 @@ def make_prediction(indicators, last_close):
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.send_message(message.chat.id, "✅ Бот запущен! Используй /signal для прогноза.")
+    bot.send_message(message.chat.id, "✅ Бот запущен! Используй команду /signal для прогноза.")
 
 @bot.message_handler(commands=['signal'])
 def send_signal(message):
@@ -127,45 +133,36 @@ def send_signal(message):
         signal, votes = make_prediction(indicators, last_close)
 
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute('''
-            INSERT INTO predictions (timestamp, close, signal, votes)
-            VALUES (?, ?, ?, ?)
-        ''', (timestamp, last_close, signal, str(votes)))
+        cursor.execute("INSERT INTO predictions (timestamp, close, signal, votes) VALUES (?, ?, ?, ?)",
+                       (timestamp, last_close, signal, ",".join(votes)))
         conn.commit()
 
         text = f"📈 Закрытие: {last_close}\n📉 Предыдущее: {prev_close}\n"
         for key in indicators:
             text += f"🔹 {key}: {round(indicators[key], 2)}\n"
         text += f"\n📌 Сигнал на следующие 15 минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}\n🧠 Голоса: {votes}"
+
         bot.send_message(message.chat.id, text)
 
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Ошибка: {str(e)}")
 
-def verify_predictions():
-    while True:
-        time.sleep(60)  # Проверка раз в минуту
-        cursor.execute('''
-            SELECT id, timestamp, close, signal FROM predictions WHERE verified = 0
-        ''')
+@bot.message_handler(commands=['accuracy'])
+def send_accuracy(message):
+    try:
+        cursor.execute("SELECT indicator, correct, incorrect FROM accuracy")
         rows = cursor.fetchall()
+        if not rows:
+            bot.send_message(message.chat.id, "📊 Пока нет статистики точности.")
+            return
+        response = "📈 Точность индикаторов:\n"
         for row in rows:
-            pid, ts, prev_close, signal = row
-            prediction_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            if datetime.utcnow() >= prediction_time + timedelta(minutes=15):
-                try:
-                    candles = get_candles(limit=2)
-                    new_close = float(candles[-1][4])
-                    result = "HIT" if (signal == "LONG" and new_close > prev_close) or (signal == "SHORT" and new_close < prev_close) else "MISS"
-                    cursor.execute('''
-                        UPDATE predictions SET verified = 1, result = ? WHERE id = ?
-                    ''', (result, pid))
-                    conn.commit()
-                except:
-                    continue
-
-# Запуск фоновой проверки
-threading.Thread(target=verify_predictions, daemon=True).start()
+            name, correct, incorrect = row
+            total = correct + incorrect
+            acc = round(100 * correct / total, 2) if total > 0 else 0
+            response += f"🔸 {name}: {acc}% (✅ {correct} / ❌ {incorrect})\n"
+        bot.send_message(message.chat.id, response)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Ошибка при получении точности: {str(e)}")
 
 bot.polling(none_stop=True)
