@@ -1,1 +1,2 @@
-pyTelegramBotAPI pybit pandas ta
+pip install pyTelegramBotAPI
+
