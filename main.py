@@ -92,11 +92,14 @@ def make_prediction(ind, close):
 # Обработка команд
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📡 Сигнал", callback_data="signal"))
-    markup.add(types.InlineKeyboardButton("📊 Точность", callback_data="accuracy"))
-    markup.add(types.InlineKeyboardButton("📍 Проверить прогноз", callback_data="verify"))
-    bot.send_message(message.chat.id, "🔘 Выберите действие:", reply_markup=markup)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(
+        types.KeyboardButton("/signal"),
+        types.KeyboardButton("/verify"),
+        types.KeyboardButton("/accuracy")
+    )
+    bot.send_message(message.chat.id, "👋 Добро пожаловать! Выберите команду:", reply_markup=markup)
+
 
 # Генерация сигнала
 def process_signal(chat_id):
