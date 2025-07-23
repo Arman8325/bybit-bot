@@ -1,45 +1,58 @@
 import telebot
 from telebot import types
-import os
+import sqlite3
 import pandas as pd
 from pybit.unified_trading import HTTP
 from datetime import datetime, timedelta
 import ta
+import os
 
-# Инициализация
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
+# Константы (можно напрямую вставить токены или использовать переменные окружения)
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
 
-# Хранилище предсказаний (в будущем можно заменить на SQLite)
-prediction_log = []
+bot = telebot.TeleBot(BOT_TOKEN)
+session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
 
-# Получение свечей
+# Подключение SQLite
+conn = sqlite3.connect("predictions.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    time TEXT,
+    close_price REAL,
+    signal TEXT,
+    actual TEXT,
+    votes TEXT
+)
+""")
+conn.commit()
+
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     return candles["result"]["list"]
 
-# Анализ индикаторов
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
-
-    indicators = {
-        "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
-        "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
-        "ADX": ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1],
-        "CCI": ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1],
-        "Stochastic": ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1],
-        "Momentum": ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1],
-        "BOLL_UP": ta.volatility.BollingerBands(df["close"]).bollinger_hband().iloc[-1],
-        "BOLL_LOW": ta.volatility.BollingerBands(df["close"]).bollinger_lband().iloc[-1],
-        "SAR": ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1],
-        "MACD": ta.trend.MACD(df["close"]).macd().iloc[-1],
-        "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
-    }
+    indicators = {}
+    indicators["RSI"] = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
+    indicators["EMA21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1]
+    indicators["ADX"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1]
+    indicators["CCI"] = ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1]
+    indicators["Stochastic"] = ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1]
+    indicators["Momentum"] = ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1]
+    bb = ta.volatility.BollingerBands(df["close"])
+    indicators["BOLL_UP"] = bb.bollinger_hband().iloc[-1]
+    indicators["BOLL_LOW"] = bb.bollinger_lband().iloc[-1]
+    indicators["SAR"] = ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1]
+    indicators["MACD"] = ta.trend.MACD(df["close"]).macd().iloc[-1]
+    indicators["WR"] = ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
     return indicators
 
-# Логика прогноза
 def make_prediction(ind, last_close):
     votes = []
 
@@ -83,77 +96,69 @@ def make_prediction(ind, last_close):
 
     return signal, votes
 
-# Обработчик /start с кнопками
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.row(
-        types.InlineKeyboardButton("📡 Получить сигнал", callback_data="signal"),
-        types.InlineKeyboardButton("📍 Проверить прогноз", callback_data="verify"),
-        types.InlineKeyboardButton("📊 Точность", callback_data="accuracy")
-    )
-    bot.send_message(message.chat.id, "🤖 Добро пожаловать! Выберите действие:", reply_markup=markup)
+def insert_prediction(timestamp, close, signal, votes):
+    cursor.execute("INSERT INTO predictions (time, close_price, signal, actual, votes) VALUES (?, ?, ?, ?, ?)",
+                   (timestamp, close, signal, None, str(votes)))
+    conn.commit()
 
-# Обработка callback-кнопок
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.data == "signal":
-        handle_signal(call.message.chat.id)
-    elif call.data == "verify":
-        handle_verify(call.message.chat.id)
-    elif call.data == "accuracy":
-        handle_accuracy(call.message.chat.id)
-
-# Обработка сигнала
-def handle_signal(chat_id):
-    raw = get_candles()
-    df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
-    indicators = analyze_indicators(df)
-    last = float(df["close"].iloc[-1])
-    prev = float(df["close"].iloc[-2])
-    signal, votes = make_prediction(indicators, last)
-
-    prediction_log.append({
-        "time": datetime.utcnow(),
-        "price": last,
-        "signal": signal,
-        "actual": None,
-        "votes": votes
-    })
-
-    text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
-    for k, v in indicators.items():
-        text += f"🔹 {k}: {round(v, 2)}\n"
-    text += f"\n📌 Прогноз на следующие 15 минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}"
-    text += f"\n🧠 Голоса: {votes}"
-
-    bot.send_message(chat_id, text)
-
-# Проверка прогнозов
-def handle_verify(chat_id):
+def update_verifications():
     now = datetime.utcnow()
-    verified = 0
-    for entry in prediction_log:
-        if entry["actual"] is None and (now - entry["time"]) > timedelta(minutes=15):
-            close_now = float(get_candles()[-1][4])
-            actual = "LONG" if close_now > entry["price"] else "SHORT" if close_now < entry["price"] else "NEUTRAL"
-            entry["actual"] = actual
-            verified += 1
-    bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {verified}")
+    cursor.execute("SELECT id, time, close_price, signal FROM predictions WHERE actual IS NULL")
+    rows = cursor.fetchall()
+    updated = 0
+    for row in rows:
+        pred_time = datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+        if now - pred_time >= timedelta(minutes=15):
+            candles = get_candles()
+            current_close = float(candles[-1][4])
+            actual = "LONG" if current_close > row[2] else "SHORT" if current_close < row[2] else "NEUTRAL"
+            cursor.execute("UPDATE predictions SET actual=? WHERE id=?", (actual, row[0]))
+            updated += 1
+    conn.commit()
+    return updated
 
-# Отображение точности
-def handle_accuracy(chat_id):
-    total, correct = 0, 0
-    for p in prediction_log:
-        if p["actual"]:
-            total += 1
-            if p["signal"] == p["actual"]:
-                correct += 1
-    if total == 0:
-        bot.send_message(chat_id, "📊 Пока нет проверенных прогнозов.")
-    else:
-        acc = round(correct / total * 100, 2)
-        bot.send_message(chat_id, f"📈 Точность прогнозов: {acc}% ({correct} из {total})")
+def calculate_accuracy():
+    cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
+    rows = cursor.fetchall()
+    total = len(rows)
+    correct = sum(1 for r in rows if r[0] == r[1])
+    accuracy = round((correct / total) * 100, 2) if total else 0
+    return total, correct, accuracy
 
-# Запуск
+@bot.message_handler(commands=['start'])
+def start(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📡 Сигнал", callback_data='signal'))
+    markup.add(types.InlineKeyboardButton("📍 Проверка прогноза", callback_data='verify'))
+    markup.add(types.InlineKeyboardButton("📊 Точность", callback_data='accuracy'))
+    bot.send_message(message.chat.id, "Добро пожаловать! Выберите действие:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    chat_id = call.message.chat.id
+
+    if call.data == "signal":
+        raw = get_candles()
+        df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+        indicators = analyze_indicators(df)
+        last_close = float(df["close"].iloc[-1])
+        prev_close = float(df["close"].iloc[-2])
+        signal, votes = make_prediction(indicators, last_close)
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        insert_prediction(timestamp, last_close, signal, votes)
+
+        text = f"📈 Закрытие: {last_close}\n📉 Предыдущее: {prev_close}\n"
+        for key, val in indicators.items():
+            text += f"🔹 {key}: {round(val, 2)}\n"
+        text += f"\n📌 Прогноз на следующие 15 минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}\n🧠 Голоса: {votes}"
+        bot.send_message(chat_id, text)
+
+    elif call.data == "verify":
+        updated = update_verifications()
+        bot.send_message(chat_id, f"✅ Обновлено прогнозов: {updated}")
+
+    elif call.data == "accuracy":
+        total, correct, acc = calculate_accuracy()
+        bot.send_message(chat_id, f"📊 Точность: {acc}% ({correct} из {total})")
+
 bot.polling(none_stop=True)
