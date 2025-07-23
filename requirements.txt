@@ -1,4 +1,8 @@
-pip install pyTelegramBotAPI ta pandas python-dotenv
+pyTelegramBotAPI
+pybit
+pandas
+ta
+
 
 
 
