@@ -1,7 +1,8 @@
 pyTelegramBotAPI
-ta
 pandas
-pyton-dotenv
+ta
+python-dotenv
+pybit
 
 
 
