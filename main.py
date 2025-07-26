@@ -181,4 +181,4 @@ def auto_predict():
 
 # Запуск бота
 bot.polling(none_stop=True)
-Давай добавим этому коду Telegram ID.
+
