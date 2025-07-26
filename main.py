@@ -9,13 +9,20 @@ import sqlite3
 import threading
 import time
 from dotenv import load_dotenv
+import matplotlib.pyplot as plt
+import io
 
-# Загрузка переменных окружения
+# === Загрузка переменных окружения ===
 load_dotenv()
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
-session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
+AUTHORIZED_USER_ID = 1311705654
 
-# БД SQLite
+bot = telebot.TeleBot(BOT_TOKEN)
+session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
+
+# === БД SQLite ===
 conn = sqlite3.connect("predictions.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -31,12 +38,12 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# Получить свечи
+# === Получение свечей ===
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     return candles["result"]["list"]
 
-# Индикаторы
+# === Расчёт индикаторов ===
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
@@ -57,7 +64,7 @@ def analyze_indicators(df):
     }
     return indicators
 
-# Прогноз
+# === Прогноз ===
 def make_prediction(ind, last_close):
     votes = []
     if ind["RSI"] > 60: votes.append("LONG")
@@ -81,7 +88,7 @@ def make_prediction(ind, last_close):
     signal = "LONG" if long_count > short_count else "SHORT" if short_count > long_count else "NEUTRAL"
     return signal, votes
 
-# Отправка сигнала
+# === Отправка сигнала ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
     df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
@@ -95,34 +102,73 @@ def process_signal(chat_id, interval):
                    (timestamp, last, signal, None, ",".join(votes), interval))
     conn.commit()
 
-    text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
+    text = f"\ud83d\udcc8 Закрытие: {last}\n\ud83d\udcc9 Предыдущее: {prev}\n"
     for key, val in indicators.items():
-        text += f"🔹 {key}: {round(val, 2)}\n"
-    text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}\n🧠 Голоса: {votes}"
+        text += f"\ud83d\udd39 {key}: {round(val, 2)}\n"
+    text += f"\n\ud83d\udccc Прогноз на следующие {interval} минут: {'\ud83d\udd3a LONG' if signal == 'LONG' else '\ud83d\udd3b SHORT' if signal == 'SHORT' else '\u26aa\ufe0f NEUTRAL'}\n\ud83e\udde0 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-# Кнопки выбора
+# === Кнопки ===
 def main_keyboard():
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("🕒 15м", callback_data="tf_15"),
-        types.InlineKeyboardButton("🕞 30м", callback_data="tf_30"),
-        types.InlineKeyboardButton("🕐 1ч", callback_data="tf_60")
+        types.InlineKeyboardButton("\ud83d\udd52 15м", callback_data="tf_15"),
+        types.InlineKeyboardButton("\ud83d\udd5e 30м", callback_data="tf_30"),
+        types.InlineKeyboardButton("\ud83d\udd50 1ч", callback_data="tf_60")
     )
     markup.row(
-        types.InlineKeyboardButton("📍 Проверка", callback_data="verify"),
-        types.InlineKeyboardButton("📊 Точность", callback_data="accuracy")
+        types.InlineKeyboardButton("\ud83d\udccd Проверка", callback_data="verify"),
+        types.InlineKeyboardButton("\ud83d\udcca Точность", callback_data="accuracy"),
+        types.InlineKeyboardButton("\ud83d\udcc8 Рейтинг", callback_data="ranking")
     )
     return markup
 
-# Команда /start
+# === Команды ===
 @bot.message_handler(commands=['start'])
 def start(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        return
     bot.send_message(message.chat.id, "Привет! Выбери действие:", reply_markup=main_keyboard())
 
-# Обработка кнопок
+@bot.message_handler(commands=['export'])
+def export_data(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        return
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    df.to_csv("predictions.csv", index=False)
+    df.to_excel("predictions.xlsx", index=False)
+    with open("predictions.csv", "rb") as f1, open("predictions.xlsx", "rb") as f2:
+        bot.send_document(message.chat.id, f1, caption="\ud83d\udcc4 CSV-файл")
+        bot.send_document(message.chat.id, f2, caption="\ud83d\udcc4 Excel-файл")
+
+@bot.message_handler(commands=['ranking'])
+def indicator_ranking(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        return
+    cursor.execute("SELECT votes, signal, actual FROM predictions WHERE actual IS NOT NULL")
+    rows = cursor.fetchall()
+    if not rows:
+        bot.send_message(message.chat.id, "Нет данных для рейтинга.")
+        return
+    scores, counts = {}, {}
+    for vote_str, signal, actual in rows:
+        for ind in vote_str.split(","):
+            counts[ind] = counts.get(ind, 0) + 1
+            if signal == actual:
+                scores[ind] = scores.get(ind, 0) + 1
+    result = "\ud83c\udfc6 *Рейтинг индикаторов по точности:*\n"
+    sorted_ind = sorted(scores.items(), key=lambda x: scores.get(x[0], 0)/counts.get(x[0], 1), reverse=True)
+    for ind, correct in sorted_ind:
+        total = counts.get(ind, 1)
+        acc = round(correct / total * 100, 2)
+        result += f"\ud83d\udd39 {ind}: {acc}% ({correct}/{total})\n"
+    bot.send_message(message.chat.id, result, parse_mode="Markdown")
+
+# === Обработка кнопок ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    if call.from_user.id != AUTHORIZED_USER_ID:
+        return
     if call.data == "tf_15":
         process_signal(call.message.chat.id, "15")
     elif call.data == "tf_30":
@@ -133,51 +179,47 @@ def handle_callback(call):
         verify_predictions(call.message.chat.id)
     elif call.data == "accuracy":
         show_accuracy(call.message.chat.id)
+    elif call.data == "ranking":
+        indicator_ranking(call.message)
 
-# Проверка прогноза
+# === Верификация прогноза ===
 def verify_predictions(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
     rows = cursor.fetchall()
     updated = 0
-
-    for row in rows:
-        id_, ts, old_price = row
+    for id_, ts, old_price in rows:
         ts_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         if now - ts_time >= timedelta(minutes=15):
-            candles = get_candles()
-            new_close = float(candles[-1][4])
+            new_close = float(get_candles()[-1][4])
             actual = "LONG" if new_close > old_price else "SHORT" if new_close < old_price else "NEUTRAL"
             cursor.execute("UPDATE predictions SET actual = ? WHERE id = ?", (actual, id_))
             updated += 1
-
     conn.commit()
-    bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
+    bot.send_message(chat_id, f"\ud83d\udd0d Обновлено прогнозов: {updated}")
 
-# Точность
+# === Показать точность ===
 def show_accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
     if not rows:
-        bot.send_message(chat_id, "📊 Ещё нет проверенных прогнозов.")
+        bot.send_message(chat_id, "\ud83d\udcca Ещё нет проверенных прогнозов.")
         return
-
     total = len(rows)
     correct = sum(1 for r in rows if r[0] == r[1])
     acc = round(correct / total * 100, 2)
-    bot.send_message(chat_id, f"✅ Точность: {acc}% ({correct}/{total})")
+    bot.send_message(chat_id, f"\u2705 Точность: {acc}% ({correct}/{total})")
 
-# 🔁 Автообновление прогноза каждые 15 мин
+# === Автообновление прогноза ===
 def auto_predict():
     while True:
         try:
-            process_signal(chat_id=YOUR_CHAT_ID, interval="15")  # ← Вставь свой chat_id!
+            process_signal(chat_id=AUTHORIZED_USER_ID, interval="15")
             time.sleep(900)
         except Exception as e:
             print(f"[AutoPredict Error] {e}")
 
-# 🔁 Запуск фонового потока
-# threading.Thread(target=auto_predict).start()  # Раскомментируй и вставь chat_id!
+threading.Thread(target=auto_predict).start()
 
-# Запуск бота
+# === Запуск бота ===
 bot.polling(none_stop=True)
