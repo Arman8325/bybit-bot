@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 # Загрузка переменных окружения
 load_dotenv()
+AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
@@ -118,11 +119,15 @@ def main_keyboard():
 # Команда /start
 @bot.message_handler(commands=['start'])
 def start(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        return
     bot.send_message(message.chat.id, "Привет! Выбери действие:", reply_markup=main_keyboard())
 
 # Обработка кнопок
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    if call.from_user.id != AUTHORIZED_USER_ID:
+        return
     if call.data == "tf_15":
         process_signal(call.message.chat.id, "15")
     elif call.data == "tf_30":
@@ -171,15 +176,13 @@ def show_accuracy(chat_id):
 def auto_predict():
     while True:
         try:
-            process_signal(chat_id=YOUR_CHAT_ID, interval="15")  # ← Вставь свой chat_id!
+            process_signal(chat_id=AUTHORIZED_USER_ID, interval="15")
             time.sleep(900)
         except Exception as e:
             print(f"[AutoPredict Error] {e}")
 
 # 🔁 Запуск фонового потока
-# threading.Thread(target=auto_predict).start()  # Раскомментируй и вставь chat_id!
+# threading.Thread(target=auto_predict).start()
 
 # Запуск бота
 bot.polling(none_stop=True)
-
- 
