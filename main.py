@@ -11,10 +11,11 @@ from ta import trend, momentum, volatility, volume
 from datetime import datetime
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = "7725284250:AAE8J5dAx2WiJ-wxJFukxujEnuOuxtRT5F"
-API_KEY = 'IyFHgr8YtnCz60D27D'
-API_SECRET = 'kxj3fry4US9lZq2nyDZIVKMgSaTd7U7vPp53'
-AUTHORIZED_USER_ID = 1311705654
+BOT_TOKEN = 'ВАШ_ТЕЛЕГРАМ_ТОКЕН'
+API_KEY = 'ВАШ_BYBIT_API_KEY'
+API_SECRET = 'ВАШ_BYBIT_API_SECRET'
+AUTHORIZED_USER_ID = 1311705654  
+
 
 bot = telebot.TeleBot(BOT_TOKEN)
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
