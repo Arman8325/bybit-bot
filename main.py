@@ -3,25 +3,18 @@ import pandas as pd
 import sqlite3
 import time
 import threading
-import openai
-import os
 from pybit.unified_trading import HTTP
 from ta import trend, momentum, volatility, volume
 from datetime import datetime
-from dotenv import load_dotenv
 
-# === Загрузка переменных окружения ===
-load_dotenv()
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-API_KEY = os.getenv("BYBIT_API_KEY")
-API_SECRET = os.getenv("BYBIT_API_SECRET")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# === НАСТРОЙКИ ===
+BOT_TOKEN = 'ВАШ_ТЕЛЕГРАМ_БОТ_ТОКЕН'
+API_KEY = 'ВАШ_BYBIT_API_KEY'
+API_SECRET = 'ВАШ_BYBIT_API_SECRET'
 AUTHORIZED_USER_ID = 1311705654
 
-# === ИНИЦИАЛИЗАЦИЯ ===
 bot = telebot.TeleBot(BOT_TOKEN)
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
-openai.api_key = OPENAI_API_KEY
 
 # === СОЗДАНИЕ БД ===
 conn = sqlite3.connect('accuracy.db', check_same_thread=False)
@@ -29,20 +22,6 @@ cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS predictions
               (timestamp TEXT, prediction TEXT, result TEXT)''')
 conn.commit()
-
-# === ЗАПРОС К CHATGPT ===
-def ask_chatgpt(prompt):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Ты аналитик крипторынка. Объясни кратко трейдеру смысл прогноза на основе голосов индикаторов."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"❌ Ошибка при обращении к ChatGPT: {e}"
 
 # === ПОЛУЧЕНИЕ ДАННЫХ ===
 def get_klines(symbol="BTCUSDT", interval="15", limit=100):
@@ -78,42 +57,40 @@ def make_prediction(df):
     last = df.iloc[-1]
     votes = []
 
-    if last["rsi"] < 30: votes.append("RSI=LONG")
-    elif last["rsi"] > 70: votes.append("RSI=SHORT")
+    if last["rsi"] < 30: votes.append("long")
+    elif last["rsi"] > 70: votes.append("short")
 
-    if last["close"] > last["ema21"]: votes.append("EMA21=LONG")
-    else: votes.append("EMA21=SHORT")
+    if last["close"] > last["ema21"]: votes.append("long")
+    else: votes.append("short")
 
-    if last["adx"] > 25: votes.append("ADX=TREND")
-    if last["cci"] > 100: votes.append("CCI=LONG")
-    elif last["cci"] < -100: votes.append("CCI=SHORT")
+    if last["adx"] > 25: votes.append("trend")
+    if last["cci"] > 100: votes.append("long")
+    elif last["cci"] < -100: votes.append("short")
 
-    if last["stoch_k"] < 20: votes.append("Stoch=LONG")
-    elif last["stoch_k"] > 80: votes.append("Stoch=SHORT")
+    if last["stoch_k"] < 20: votes.append("long")
+    elif last["stoch_k"] > 80: votes.append("short")
 
-    if last["roc"] > 0: votes.append("ROC=LONG")
-    else: votes.append("ROC=SHORT")
+    if last["roc"] > 0: votes.append("long")
+    else: votes.append("short")
 
-    if last["close"] > last["sma20"]: votes.append("SMA20=LONG")
-    else: votes.append("SMA20=SHORT")
+    if last["close"] > last["sma20"]: votes.append("long")
+    else: votes.append("short")
 
-    if last["close"] > last["bb_bbm"]: votes.append("BOLL=LONG")
-    else: votes.append("BOLL=SHORT")
+    if last["close"] > last["bb_bbm"]: votes.append("long")
+    else: votes.append("short")
 
-    if last["wr"] < -80: votes.append("WR=LONG")
-    elif last["wr"] > -20: votes.append("WR=SHORT")
+    if last["wr"] < -80: votes.append("long")
+    elif last["wr"] > -20: votes.append("short")
 
-    long_votes = [v for v in votes if "=LONG" in v]
-    short_votes = [v for v in votes if "=SHORT" in v]
+    long_votes = votes.count("long")
+    short_votes = votes.count("short")
 
-    if len(long_votes) > len(short_votes):
-        signal = "LONG"
-    elif len(short_votes) > len(long_votes):
-        signal = "SHORT"
+    if long_votes > short_votes:
+        return "LONG"
+    elif short_votes > long_votes:
+        return "SHORT"
     else:
-        signal = "NEUTRAL"
-
-    return signal, votes
+        return "NEUTRAL"
 
 # === ОБРАБОТКА КОМАНД ===
 @bot.message_handler(commands=["start", "signal"])
@@ -125,34 +102,27 @@ def handle_command(message):
         bot.send_message(message.chat.id, "✅ Бот активен. Используйте /signal для прогноза.")
     elif message.text == "/signal":
         df = calculate_indicators(get_klines())
-        prediction, votes = make_prediction(df)
+        prediction = make_prediction(df)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("INSERT INTO predictions (timestamp, prediction, result) VALUES (?, ?, ?)", (timestamp, prediction, "pending"))
         conn.commit()
-
-        vote_text = "\n".join(votes)
-        prompt = f"Прогноз: {prediction}\nГолоса:\n{vote_text}"
-        explanation = ask_chatgpt(prompt)
-
-        bot.send_message(message.chat.id, f"\ud83d\udcca Прогноз: *{prediction}*\n\n\ud83e\udde0 Объяснение от GPT:\n{explanation}", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"📊 Прогноз на следующие 15 минут: *{prediction}*", parse_mode="Markdown")
 
 # === АВТОПРОГНОЗ ===
 def auto_update():
     while True:
         try:
             df = calculate_indicators(get_klines())
-            prediction, votes = make_prediction(df)
+            prediction = make_prediction(df)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("INSERT INTO predictions (timestamp, prediction, result) VALUES (?, ?, ?)", (timestamp, prediction, "pending"))
             conn.commit()
-            prompt = f"Прогноз: {prediction}\nГолоса:\n{chr(10).join(votes)}"
-            explanation = ask_chatgpt(prompt)
-            bot.send_message(AUTHORIZED_USER_ID, f"\u23f0 Авто-прогноз: *{prediction}*\n\ud83e\udde0 GPT:\n{explanation}", parse_mode="Markdown")
+            bot.send_message(AUTHORIZED_USER_ID, f"🔄 Авто-прогноз: *{prediction}*", parse_mode="Markdown")
         except Exception as e:
             print(f"[Ошибка автообновления]: {e}")
-        time.sleep(900)  # каждые 15 минут
+        time.sleep(15 * 60)
 
 threading.Thread(target=auto_update, daemon=True).start()
 
-# === ЗАПУСК БОТА ===
+# === СТАРТ БОТА ===
 bot.polling(none_stop=True)
