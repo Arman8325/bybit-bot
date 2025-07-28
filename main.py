@@ -117,7 +117,7 @@ def ask_chatgpt(indicators, votes, interval):
 # === Обработка сигнала и отправка ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
-    df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+    df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
     indicators = analyze_indicators(df)
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
@@ -236,7 +236,7 @@ def export_excel(message):
     buf.seek(0)
     bot.send_document(message.chat.id, ("signals.xlsx", buf), caption="📥 Экспорт сигналов в Excel")
 
-# === Помощник для экспорта по таймфрейму ===
+# === Экспорт по таймфрейму ===
 def get_df_by_interval(interval: str) -> pd.DataFrame:
     if interval not in {"15", "30", "60"}:
         return pd.DataFrame()
@@ -259,8 +259,7 @@ def export_interval_csv(message):
     buf = BytesIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
-    bot.send_document(message.chat.id, (f"signals_{interval}m.csv", buf),
-                      caption=f"📥 Сигналы {interval}м в CSV")
+    bot.send_document(message.chat.id, (f"signals_{interval}m.csv", buf), caption=f"📥 Сигналы {interval}м в CSV")
 
 @bot.message_handler(commands=['export_interval_excel'])
 def export_interval_excel(message):
@@ -279,48 +278,9 @@ def export_interval_excel(message):
     buf = BytesIO()
     df.to_excel(buf, index=False, sheet_name=f"{interval}m")
     buf.seek(0)
-    bot.send_document(message.chat.id, (f"signals_{interval}m.xlsx", buf),
-                      caption=f"📥 Сигналы {interval}м в Excel")
+    bot.send_document(message.chat.id, (f"signals_{interval}m.xlsx", buf), caption=f"📥 Сигналы {interval}м в Excel")
 
-# === Лучшие точки входа (LONG) ===
-def is_entry_opportunity(indicators, last_close, votes):
-    if indicators["RSI"] >= 30:
-        return False
-    if last_close >= indicators["EMA21"]:
-        return False
-    long_count = votes.count("LONG")
-    if long_count / len(votes) < 0.7:
-        return False
-    return True
-
-def auto_entry_signal():
-    while True:
-        try:
-            raw = get_candles(interval="15")
-            df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
-            ind = analyze_indicators(df)
-            last = float(df["close"].iloc[-1])
-            _, votes = make_prediction(ind, last)
-
-            if is_entry_opportunity(ind, last, votes):
-                text = (
-                    "🔔 *Лучшее время для входа в LONG!*\n"
-                    f"Цена: {last}\n"
-                    f"RSI: {round(ind['RSI'],2)}, EMA21: {round(ind['EMA21'],2)}\n"
-                    f"Голоса: {votes.count('LONG')}/{len(votes)} LONG\n\n"
-                    "Ты решаешь, входить или нет."
-                )
-                bot.send_message(AUTHORIZED_USER_ID, text, parse_mode="Markdown")
-                time.sleep(900)
-            else:
-                time.sleep(60)
-        except Exception as e:
-            print(f"[EntrySignal Error] {e}")
-            time.sleep(60)
-
-threading.Thread(target=auto_entry_signal, daemon=True).start()
-
-# === Автообновление каждые 15 минут (предсказания) ===
+# === Авто‑предсказания каждые 15 мин ===
 def auto_predict():
     while True:
         try:
@@ -330,7 +290,40 @@ def auto_predict():
             print(f"[AutoPredict Error] {e}")
             time.sleep(60)
 
-# threading.Thread(target=auto_predict, daemon=True).start()
+threading.Thread(target=auto_predict, daemon=True).start()
+
+# === Ежедневный отчёт по точности ===
+def daily_summary():
+    while True:
+        now = datetime.utcnow()
+        # следующий запуск в полночь UTC
+        next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time.sleep((next_run - now).total_seconds())
+
+        start = (next_run - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+        end   = next_run.strftime("%Y-%m-%d 00:00:00")
+        rows = cursor.execute("""
+            SELECT signal, actual
+              FROM predictions
+             WHERE timestamp >= ? AND timestamp < ? AND actual IS NOT NULL
+        """, (start, end)).fetchall()
+
+        total = len(rows)
+        correct = sum(1 for s, a in rows if s == a)
+        if total:
+            acc = round(correct / total * 100, 2)
+            text = (
+                f"📅 Ежедневный отчёт за {start.split()[0]}:\n"
+                f"  Всего прогнозов: {total}\n"
+                f"  Попаданий: {correct}\n"
+                f"  Точность: {acc}%"
+            )
+        else:
+            text = f"📅 Ежедневный отчёт за {start.split()[0]}: нет проверенных прогнозов."
+
+        bot.send_message(AUTHORIZED_USER_ID, text)
+
+threading.Thread(target=daily_summary, daemon=True).start()
 
 # === Запуск бота ===
 bot.polling(none_stop=True)
