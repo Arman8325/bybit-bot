@@ -9,12 +9,14 @@ import sqlite3
 import threading
 import time
 from dotenv import load_dotenv
+import openai
 
 # === Загрузка переменных окружения ===
 load_dotenv()
 AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # === БД SQLite ===
 conn = sqlite3.connect("predictions.db", check_same_thread=False)
@@ -82,6 +84,24 @@ def make_prediction(ind, last_close):
     signal = "LONG" if long_count > short_count else "SHORT" if short_count > long_count else "NEUTRAL"
     return signal, votes
 
+# === ChatGPT-анализ ===
+def ask_chatgpt(indicators, votes):
+    prompt = "На основе следующих индикаторов и голосов сделай краткий прогноз (LONG/SHORT/NEUTRAL) и поясни.\n\n"
+    for k, v in indicators.items():
+        prompt += f"{k}: {round(v, 2)}\n"
+    prompt += f"\nГолоса индикаторов: {votes}"
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Ты криптоаналитик. Дай прогноз кратко и профессионально."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"❌ Ошибка ChatGPT: {e}"
+
 # === Отправка сигнала ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
@@ -96,10 +116,14 @@ def process_signal(chat_id, interval):
                    (timestamp, last, signal, None, ",".join(votes), interval))
     conn.commit()
 
+    chatgpt_response = ask_chatgpt(indicators, votes)
+
     text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
     for key, val in indicators.items():
         text += f"🔹 {key}: {round(val, 2)}\n"
-    text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}\n🧠 Голоса: {votes}"
+    text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}"
+    text += f"\n🧠 Голоса: {votes}\n🤖 ChatGPT: {chatgpt_response}"
+
     bot.send_message(chat_id, text)
 
 # === Кнопки выбора ===
