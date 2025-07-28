@@ -92,7 +92,7 @@ def ask_chatgpt(indicators, votes):
     prompt += f"\nГолоса индикаторов: {votes}"
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "Ты криптоаналитик. Дай прогноз кратко и профессионально."},
                 {"role": "user", "content": prompt}
