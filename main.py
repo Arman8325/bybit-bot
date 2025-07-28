@@ -143,10 +143,13 @@ def main_keyboard():
 # === Команда /start ===
 @bot.message_handler(commands=['start'])
 def start(message):
-    if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
-        return
-    bot.send_message(message.chat.id, "Привет! Выбери действие:", reply_markup=main_keyboard())
+    try:
+        if message.from_user.id != AUTHORIZED_USER_ID:
+            bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
+            return
+        bot.send_message(message.chat.id, "✅ Бот запущен!\nВыбери действие:", reply_markup=main_keyboard())
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Ошибка запуска: {e}")
 
 # === Обработка кнопок ===
 @bot.callback_query_handler(func=lambda call: True)
