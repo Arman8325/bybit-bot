@@ -3,7 +3,8 @@ pandas
 ta
 python-dotenv
 pybit
-openai
+openai==0.28
+
 
 
 
