@@ -1,7 +1,9 @@
 import telebot
 from telebot import types
 import os
+import re
 import pandas as pd
+from io import BytesIO
 from pybit.unified_trading import HTTP
 from datetime import datetime, timedelta
 import ta
@@ -34,20 +36,19 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# === Переменная для защиты от дублирования запросов ===
-last_prompt = None
+# === Хранение последних prompt’ов по таймфрейму ===
+last_prompts = {}  # { interval: prompt_string }
 
 # === Получить свечи ===
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
-    candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
-    return candles["result"]["list"]
+    data = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
+    return data["result"]["list"]
 
 # === Индикаторы ===
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
-
     return {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
         "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
@@ -62,32 +63,22 @@ def analyze_indicators(df):
         "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
     }
 
-# === Прогноз по простым правилам ===
+# === Простое голосование по индикаторам ===
 def make_prediction(ind, last_close):
     votes = []
-    # RSI
     if ind["RSI"] > 60: votes.append("LONG")
     elif ind["RSI"] < 40: votes.append("SHORT")
-    # EMA21
     votes.append("LONG" if last_close > ind["EMA21"] else "SHORT")
-    # ADX
     if ind["ADX"] > 25: votes.append("LONG")
-    # CCI
     if ind["CCI"] > 100: votes.append("LONG")
     elif ind["CCI"] < -100: votes.append("SHORT")
-    # Stochastic
     if ind["Stochastic"] > 80: votes.append("SHORT")
     elif ind["Stochastic"] < 20: votes.append("LONG")
-    # Momentum
     votes.append("LONG" if ind["Momentum"] > 0 else "SHORT")
-    # Bollinger
     if last_close > ind["BOLL_UP"]: votes.append("SHORT")
     elif last_close < ind["BOLL_LOW"]: votes.append("LONG")
-    # SAR
     votes.append("LONG" if last_close > ind["SAR"] else "SHORT")
-    # MACD
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
-    # Williams %R
     if ind["WR"] < -80: votes.append("LONG")
     elif ind["WR"] > -20: votes.append("SHORT")
 
@@ -100,32 +91,30 @@ def make_prediction(ind, last_close):
     else:
         return "NEUTRAL", votes
 
-# === ChatGPT-анализ with anti-spam на дублирование ===
-def ask_chatgpt(indicators, votes):
-    global last_prompt
+# === ChatGPT-анализ с anti‑spam по interval ===
+def ask_chatgpt(indicators, votes, interval):
     prompt = "На основе следующих индикаторов и голосов сделай краткий прогноз (LONG/SHORT/NEUTRAL) и поясни.\n\n"
     for k, v in indicators.items():
         prompt += f"{k}: {round(v, 2)}\n"
     prompt += f"\nГолоса индикаторов: {votes}"
 
-    # Проверяем, не дублируется ли запрос
-    if prompt == last_prompt:
+    if last_prompts.get(interval) == prompt:
         return "⚠️ Без изменений в индикаторах, прогноз не обновлён."
-    last_prompt = prompt
+    last_prompts[interval] = prompt
 
     try:
-        response = openai.ChatCompletion.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "Ты криптоаналитик. Дай прогноз кратко и профессионально."},
-                {"role": "user", "content": prompt}
+                {"role": "user",   "content": prompt}
             ]
         )
-        return response.choices[0].message["content"]
+        return resp.choices[0].message["content"]
     except Exception as e:
         return f"❌ Ошибка ChatGPT: {e}"
 
-# === Отправка сигнала ===
+# === Обработка сигнала и отправка ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
     df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
@@ -141,7 +130,7 @@ def process_signal(chat_id, interval):
     )
     conn.commit()
 
-    chatgpt_response = ask_chatgpt(indicators, votes)
+    chatgpt_response = ask_chatgpt(indicators, votes, interval)
 
     text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
     for key, val in indicators.items():
@@ -168,14 +157,14 @@ def main_keyboard():
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
         return
     bot.send_message(message.chat.id, "✅ Бот запущен!\nВыбери действие:", reply_markup=main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     if call.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(call.message.chat.id, "⛔ У вас нет доступа к этому боту.")
+        bot.send_message(call.message.chat.id, "⛔ У вас нет доступа.")
         return
     if call.data == "tf_15":
         process_signal(call.message.chat.id, "15")
@@ -188,6 +177,7 @@ def handle_callback(call):
     elif call.data == "accuracy":
         show_accuracy(call.message.chat.id)
 
+# === Проверка прогнозов ===
 def verify_predictions(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
@@ -205,6 +195,7 @@ def verify_predictions(chat_id):
     conn.commit()
     bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
 
+# === Показ точности ===
 def show_accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
@@ -216,6 +207,82 @@ def show_accuracy(chat_id):
     acc = round(correct / total * 100, 2)
     bot.send_message(chat_id, f"✅ Точность: {acc}% ({correct}/{total})")
 
+# === Экспорт всех сигналов ===
+@bot.message_handler(commands=['export'])
+def export_csv(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
+        return
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    if df.empty:
+        bot.send_message(message.chat.id, "📁 Нет данных для экспорта.")
+        return
+    buf = BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    bot.send_document(message.chat.id, ("signals.csv", buf), caption="📥 Экспорт сигналов в CSV")
+
+@bot.message_handler(commands=['export_excel'])
+def export_excel(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
+        return
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    if df.empty:
+        bot.send_message(message.chat.id, "📁 Нет данных для экспорта.")
+        return
+    buf = BytesIO()
+    df.to_excel(buf, index=False, sheet_name="Signals")
+    buf.seek(0)
+    bot.send_document(message.chat.id, ("signals.xlsx", buf), caption="📥 Экспорт сигналов в Excel")
+
+# === Помощник для экспорта по таймфрейму ===
+def get_df_by_interval(interval: str) -> pd.DataFrame:
+    if interval not in {"15", "30", "60"}:
+        return pd.DataFrame()
+    return pd.read_sql_query("SELECT * FROM predictions WHERE timeframe = ?", conn, params=(interval,))
+
+@bot.message_handler(commands=['export_interval'])
+def export_interval_csv(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
+        return
+    match = re.match(r"^/export_interval\s+(\d+)$", message.text)
+    if not match:
+        bot.send_message(message.chat.id, "ℹ️ Используй: /export_interval 15 или 30 или 60")
+        return
+    interval = match.group(1)
+    df = get_df_by_interval(interval)
+    if df.empty:
+        bot.send_message(message.chat.id, f"📁 Нет данных для {interval}‑минутного таймфрейма.")
+        return
+    buf = BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    bot.send_document(message.chat.id, (f"signals_{interval}m.csv", buf),
+                      caption=f"📥 Сигналы {interval}м в CSV")
+
+@bot.message_handler(commands=['export_interval_excel'])
+def export_interval_excel(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
+        return
+    match = re.match(r"^/export_interval_excel\s+(\d+)$", message.text)
+    if not match:
+        bot.send_message(message.chat.id, "ℹ️ Используй: /export_interval_excel 15 или 30 или 60")
+        return
+    interval = match.group(1)
+    df = get_df_by_interval(interval)
+    if df.empty:
+        bot.send_message(message.chat.id, f"📁 Нет данных для {interval}‑минутного таймфрейма.")
+        return
+    buf = BytesIO()
+    df.to_excel(buf, index=False, sheet_name=f"{interval}m")
+    buf.seek(0)
+    bot.send_document(message.chat.id, (f"signals_{interval}m.xlsx", buf),
+                      caption=f"📥 Сигналы {interval}м в Excel")
+
+# === Автообновление каждые 15 минут ===
 def auto_predict():
     while True:
         try:
@@ -225,4 +292,6 @@ def auto_predict():
             print(f"[AutoPredict Error] {e}")
 
 # threading.Thread(target=auto_predict).start()
+
+# === Запуск бота ===
 bot.polling(none_stop=True)
