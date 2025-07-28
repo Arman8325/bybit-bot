@@ -282,7 +282,45 @@ def export_interval_excel(message):
     bot.send_document(message.chat.id, (f"signals_{interval}m.xlsx", buf),
                       caption=f"📥 Сигналы {interval}м в Excel")
 
-# === Автообновление каждые 15 минут ===
+# === Лучшие точки входа (LONG) ===
+def is_entry_opportunity(indicators, last_close, votes):
+    if indicators["RSI"] >= 30:
+        return False
+    if last_close >= indicators["EMA21"]:
+        return False
+    long_count = votes.count("LONG")
+    if long_count / len(votes) < 0.7:
+        return False
+    return True
+
+def auto_entry_signal():
+    while True:
+        try:
+            raw = get_candles(interval="15")
+            df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
+            ind = analyze_indicators(df)
+            last = float(df["close"].iloc[-1])
+            _, votes = make_prediction(ind, last)
+
+            if is_entry_opportunity(ind, last, votes):
+                text = (
+                    "🔔 *Лучшее время для входа в LONG!*\n"
+                    f"Цена: {last}\n"
+                    f"RSI: {round(ind['RSI'],2)}, EMA21: {round(ind['EMA21'],2)}\n"
+                    f"Голоса: {votes.count('LONG')}/{len(votes)} LONG\n\n"
+                    "Ты решаешь, входить или нет."
+                )
+                bot.send_message(AUTHORIZED_USER_ID, text, parse_mode="Markdown")
+                time.sleep(900)
+            else:
+                time.sleep(60)
+        except Exception as e:
+            print(f"[EntrySignal Error] {e}")
+            time.sleep(60)
+
+threading.Thread(target=auto_entry_signal, daemon=True).start()
+
+# === Автообновление каждые 15 минут (предсказания) ===
 def auto_predict():
     while True:
         try:
@@ -290,8 +328,9 @@ def auto_predict():
             time.sleep(900)
         except Exception as e:
             print(f"[AutoPredict Error] {e}")
+            time.sleep(60)
 
-# threading.Thread(target=auto_predict).start()
+# threading.Thread(target=auto_predict, daemon=True).start()
 
 # === Запуск бота ===
 bot.polling(none_stop=True)
