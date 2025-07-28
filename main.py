@@ -10,12 +10,13 @@ import threading
 import time
 from dotenv import load_dotenv
 
-# Загрузка переменных окружения
+# === Загрузка переменных окружения ===
 load_dotenv()
+AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
 bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
-# БД SQLite
+# === БД SQLite ===
 conn = sqlite3.connect("predictions.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -31,12 +32,12 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# Получить свечи
+# === Получить свечи ===
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     return candles["result"]["list"]
 
-# Индикаторы
+# === Индикаторы ===
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"] = df["high"].astype(float)
@@ -57,7 +58,7 @@ def analyze_indicators(df):
     }
     return indicators
 
-# Прогноз
+# === Прогноз ===
 def make_prediction(ind, last_close):
     votes = []
     if ind["RSI"] > 60: votes.append("LONG")
@@ -81,7 +82,7 @@ def make_prediction(ind, last_close):
     signal = "LONG" if long_count > short_count else "SHORT" if short_count > long_count else "NEUTRAL"
     return signal, votes
 
-# Отправка сигнала
+# === Отправка сигнала ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
     df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
@@ -101,7 +102,7 @@ def process_signal(chat_id, interval):
     text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}\n🧠 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-# Кнопки выбора
+# === Кнопки выбора ===
 def main_keyboard():
     markup = types.InlineKeyboardMarkup()
     markup.row(
@@ -115,14 +116,20 @@ def main_keyboard():
     )
     return markup
 
-# Команда /start
+# === Команда /start ===
 @bot.message_handler(commands=['start'])
 def start(message):
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
+        return
     bot.send_message(message.chat.id, "Привет! Выбери действие:", reply_markup=main_keyboard())
 
-# Обработка кнопок
+# === Обработка кнопок ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    if call.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(call.message.chat.id, "⛔ У вас нет доступа к этому боту.")
+        return
     if call.data == "tf_15":
         process_signal(call.message.chat.id, "15")
     elif call.data == "tf_30":
@@ -134,7 +141,7 @@ def handle_callback(call):
     elif call.data == "accuracy":
         show_accuracy(call.message.chat.id)
 
-# Проверка прогноза
+# === Проверка прогноза ===
 def verify_predictions(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
@@ -154,7 +161,7 @@ def verify_predictions(chat_id):
     conn.commit()
     bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
 
-# Точность
+# === Точность ===
 def show_accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
@@ -167,18 +174,16 @@ def show_accuracy(chat_id):
     acc = round(correct / total * 100, 2)
     bot.send_message(chat_id, f"✅ Точность: {acc}% ({correct}/{total})")
 
-# 🔁 Автообновление прогноза каждые 15 мин
+# === Автообновление прогноза каждые 15 мин ===
 def auto_predict():
     while True:
         try:
-            process_signal(chat_id=YOUR_CHAT_ID, interval="15")  # ← Вставь свой chat_id!
+            process_signal(chat_id=AUTHORIZED_USER_ID, interval="15")
             time.sleep(900)
         except Exception as e:
             print(f"[AutoPredict Error] {e}")
 
-# 🔁 Запуск фонового потока
-# threading.Thread(target=auto_predict).start()  # Раскомментируй и вставь chat_id!
+# threading.Thread(target=auto_predict).start()
 
-# Запуск бота
+# === Запуск бота ===
 bot.polling(none_stop=True)
-
