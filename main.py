@@ -81,7 +81,6 @@ def make_prediction(ind, last_close):
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
     if ind["WR"] < -80: votes.append("LONG")
     elif ind["WR"] > -20: votes.append("SHORT")
-
     long_count = votes.count("LONG")
     short_count = votes.count("SHORT")
     if long_count > short_count:
@@ -91,17 +90,15 @@ def make_prediction(ind, last_close):
     else:
         return "NEUTRAL", votes
 
-# === ChatGPT-анализ с anti‑spam по interval ===
+# === ChatGPT‑анализ с anti‑spam по interval ===
 def ask_chatgpt(indicators, votes, interval):
     prompt = "На основе следующих индикаторов и голосов сделай краткий прогноз (LONG/SHORT/NEUTRAL) и поясни.\n\n"
     for k, v in indicators.items():
         prompt += f"{k}: {round(v, 2)}\n"
     prompt += f"\nГолоса индикаторов: {votes}"
-
     if last_prompts.get(interval) == prompt:
         return "⚠️ Без изменений в индикаторах, прогноз не обновлён."
     last_prompts[interval] = prompt
-
     try:
         resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
@@ -122,60 +119,60 @@ def process_signal(chat_id, interval):
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(indicators, last)
-
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?, ?, ?, ?, ?, ?)",
         (timestamp, last, signal, None, ",".join(votes), interval)
     )
     conn.commit()
-
     chatgpt_response = ask_chatgpt(indicators, votes, interval)
-
     text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
     for key, val in indicators.items():
         text += f"🔹 {key}: {round(val, 2)}\n"
     text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal=='LONG' else '🔻 SHORT' if signal=='SHORT' else '⚪️ NEUTRAL'}"
     text += f"\n🧠 Голоса: {votes}\n🤖 ChatGPT: {chatgpt_response}"
-
     bot.send_message(chat_id, text)
 
-# === Кнопки выбора ===
-def main_keyboard():
-    markup = types.InlineKeyboardMarkup()
-    markup.row(
-        types.InlineKeyboardButton("🕒 15м", callback_data="tf_15"),
-        types.InlineKeyboardButton("🕞 30м", callback_data="tf_30"),
-        types.InlineKeyboardButton("🕐 1ч", callback_data="tf_60")
-    )
-    markup.row(
-        types.InlineKeyboardButton("📍 Проверка", callback_data="verify"),
-        types.InlineKeyboardButton("📊 Точность", callback_data="accuracy")
-    )
-    return markup
+# === Постоянная клавиатура ===
+def make_reply_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("15м", "30м", "1ч")
+    kb.row("Проверка", "Точность")
+    kb.row("Export CSV", "Export Excel")
+    return kb
 
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id != AUTHORIZED_USER_ID:
         bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
         return
-    bot.send_message(message.chat.id, "✅ Бот запущен!\nВыбери действие:", reply_markup=main_keyboard())
+    bot.send_message(message.chat.id,
+                     "✅ Бот запущен! Выбери действие на клавиатуре ниже:",
+                     reply_markup=make_reply_keyboard())
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    if call.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(call.message.chat.id, "⛔ У вас нет доступа.")
-        return
-    if call.data == "tf_15":
-        process_signal(call.message.chat.id, "15")
-    elif call.data == "tf_30":
-        process_signal(call.message.chat.id, "30")
-    elif call.data == "tf_60":
-        process_signal(call.message.chat.id, "60")
-    elif call.data == "verify":
-        verify_predictions(call.message.chat.id)
-    elif call.data == "accuracy":
-        show_accuracy(call.message.chat.id)
+# === Обработка нажатий ===
+@bot.message_handler(func=lambda m: m.chat.id == AUTHORIZED_USER_ID)
+def handle_buttons(message):
+    text = message.text.strip()
+
+    if text == "15м":
+        process_signal(message.chat.id, "15")
+    elif text == "30м":
+        process_signal(message.chat.id, "30")
+    elif text == "1ч":
+        process_signal(message.chat.id, "60")
+    elif text == "Проверка":
+        verify_predictions(message.chat.id)
+    elif text == "Точность":
+        show_accuracy(message.chat.id)
+    elif text == "Export CSV":
+        export_csv(message)
+    elif text == "Export Excel":
+        export_excel(message)
+    else:
+        bot.send_message(message.chat.id,
+                         "ℹ️ Используй клавиатуру для управления ботом.",
+                         reply_markup=make_reply_keyboard())
 
 # === Проверка прогнозов ===
 def verify_predictions(chat_id):
@@ -207,88 +204,33 @@ def show_accuracy(chat_id):
     acc = round(correct / total * 100, 2)
     bot.send_message(chat_id, f"✅ Точность: {acc}% ({correct}/{total})")
 
-# === Экспорт всех сигналов ===
-@bot.message_handler(commands=['export'])
+# === Экспорт функций ===
 def export_csv(message):
-    if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
-        return
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
     if df.empty:
         bot.send_message(message.chat.id, "📁 Нет данных для экспорта.")
         return
     buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    df.to_csv(buf, index=False); buf.seek(0)
     bot.send_document(message.chat.id, ("signals.csv", buf), caption="📥 Экспорт сигналов в CSV")
 
-@bot.message_handler(commands=['export_excel'])
 def export_excel(message):
-    if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
-        return
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
     if df.empty:
         bot.send_message(message.chat.id, "📁 Нет данных для экспорта.")
         return
     buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="Signals")
-    buf.seek(0)
+    df.to_excel(buf, index=False, sheet_name="Signals"); buf.seek(0)
     bot.send_document(message.chat.id, ("signals.xlsx", buf), caption="📥 Экспорт сигналов в Excel")
-
-# === Экспорт по таймфрейму ===
-def get_df_by_interval(interval: str) -> pd.DataFrame:
-    if interval not in {"15", "30", "60"}:
-        return pd.DataFrame()
-    return pd.read_sql_query("SELECT * FROM predictions WHERE timeframe = ?", conn, params=(interval,))
-
-@bot.message_handler(commands=['export_interval'])
-def export_interval_csv(message):
-    if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
-        return
-    match = re.match(r"^/export_interval\s+(\d+)$", message.text)
-    if not match:
-        bot.send_message(message.chat.id, "ℹ️ Используй: /export_interval 15 или 30 или 60")
-        return
-    interval = match.group(1)
-    df = get_df_by_interval(interval)
-    if df.empty:
-        bot.send_message(message.chat.id, f"📁 Нет данных для {interval}‑минутного таймфрейма.")
-        return
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    bot.send_document(message.chat.id, (f"signals_{interval}m.csv", buf), caption=f"📥 Сигналы {interval}м в CSV")
-
-@bot.message_handler(commands=['export_interval_excel'])
-def export_interval_excel(message):
-    if message.from_user.id != AUTHORIZED_USER_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
-        return
-    match = re.match(r"^/export_interval_excel\s+(\d+)$", message.text)
-    if not match:
-        bot.send_message(message.chat.id, "ℹ️ Используй: /export_interval_excel 15 или 30 или 60")
-        return
-    interval = match.group(1)
-    df = get_df_by_interval(interval)
-    if df.empty:
-        bot.send_message(message.chat.id, f"📁 Нет данных для {interval}‑минутного таймфрейма.")
-        return
-    buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name=f"{interval}m")
-    buf.seek(0)
-    bot.send_document(message.chat.id, (f"signals_{interval}m.xlsx", buf), caption=f"📥 Сигналы {interval}м в Excel")
 
 # === Авто‑предсказания каждые 15 мин ===
 def auto_predict():
     while True:
         try:
-            process_signal(chat_id=AUTHORIZED_USER_ID, interval="15")
+            process_signal(AUTHORIZED_USER_ID, "15")
             time.sleep(900)
         except Exception as e:
-            print(f"[AutoPredict Error] {e}")
-            time.sleep(60)
+            print(f"[AutoPredict Error] {e}"); time.sleep(60)
 
 threading.Thread(target=auto_predict, daemon=True).start()
 
@@ -296,31 +238,24 @@ threading.Thread(target=auto_predict, daemon=True).start()
 def daily_summary():
     while True:
         now = datetime.utcnow()
-        # следующий запуск в полночь UTC
         next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         time.sleep((next_run - now).total_seconds())
-
         start = (next_run - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
         end   = next_run.strftime("%Y-%m-%d 00:00:00")
         rows = cursor.execute("""
             SELECT signal, actual
-              FROM predictions
-             WHERE timestamp >= ? AND timestamp < ? AND actual IS NOT NULL
+            FROM predictions
+            WHERE timestamp >= ? AND timestamp < ? AND actual IS NOT NULL
         """, (start, end)).fetchall()
-
-        total = len(rows)
-        correct = sum(1 for s, a in rows if s == a)
+        total = len(rows); correct = sum(1 for s, a in rows if s == a)
         if total:
             acc = round(correct / total * 100, 2)
-            text = (
-                f"📅 Ежедневный отчёт за {start.split()[0]}:\n"
-                f"  Всего прогнозов: {total}\n"
-                f"  Попаданий: {correct}\n"
-                f"  Точность: {acc}%"
-            )
+            text = (f"📅 Ежедневный отчёт за {start.split()[0]}:\n"
+                    f"  Всего прогнозов: {total}\n"
+                    f"  Попаданий: {correct}\n"
+                    f"  Точность: {acc}%")
         else:
             text = f"📅 Ежедневный отчёт за {start.split()[0]}: нет проверенных прогнозов."
-
         bot.send_message(AUTHORIZED_USER_ID, text)
 
 threading.Thread(target=daily_summary, daemon=True).start()
