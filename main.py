@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
+# === Переменная для защиты от дублирования запросов ===
+last_prompt = None
+
 # === Получить свечи ===
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     candles = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
@@ -45,7 +48,7 @@ def analyze_indicators(df):
     df["high"] = df["high"].astype(float)
     df["low"] = df["low"].astype(float)
 
-    indicators = {
+    return {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
         "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
         "ADX": ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1],
@@ -58,47 +61,67 @@ def analyze_indicators(df):
         "MACD": ta.trend.MACD(df["close"]).macd().iloc[-1],
         "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
     }
-    return indicators
 
-# === Прогноз ===
+# === Прогноз по простым правилам ===
 def make_prediction(ind, last_close):
     votes = []
+    # RSI
     if ind["RSI"] > 60: votes.append("LONG")
     elif ind["RSI"] < 40: votes.append("SHORT")
+    # EMA21
     votes.append("LONG" if last_close > ind["EMA21"] else "SHORT")
+    # ADX
     if ind["ADX"] > 25: votes.append("LONG")
+    # CCI
     if ind["CCI"] > 100: votes.append("LONG")
     elif ind["CCI"] < -100: votes.append("SHORT")
+    # Stochastic
     if ind["Stochastic"] > 80: votes.append("SHORT")
     elif ind["Stochastic"] < 20: votes.append("LONG")
+    # Momentum
     votes.append("LONG" if ind["Momentum"] > 0 else "SHORT")
+    # Bollinger
     if last_close > ind["BOLL_UP"]: votes.append("SHORT")
     elif last_close < ind["BOLL_LOW"]: votes.append("LONG")
+    # SAR
     votes.append("LONG" if last_close > ind["SAR"] else "SHORT")
+    # MACD
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
+    # Williams %R
     if ind["WR"] < -80: votes.append("LONG")
     elif ind["WR"] > -20: votes.append("SHORT")
 
     long_count = votes.count("LONG")
     short_count = votes.count("SHORT")
-    signal = "LONG" if long_count > short_count else "SHORT" if short_count > long_count else "NEUTRAL"
-    return signal, votes
+    if long_count > short_count:
+        return "LONG", votes
+    elif short_count > long_count:
+        return "SHORT", votes
+    else:
+        return "NEUTRAL", votes
 
-# === ChatGPT-анализ ===
+# === ChatGPT-анализ with anti-spam на дублирование ===
 def ask_chatgpt(indicators, votes):
+    global last_prompt
     prompt = "На основе следующих индикаторов и голосов сделай краткий прогноз (LONG/SHORT/NEUTRAL) и поясни.\n\n"
     for k, v in indicators.items():
         prompt += f"{k}: {round(v, 2)}\n"
     prompt += f"\nГолоса индикаторов: {votes}"
+
+    # Проверяем, не дублируется ли запрос
+    if prompt == last_prompt:
+        return "⚠️ Без изменений в индикаторах, прогноз не обновлён."
+    last_prompt = prompt
+
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "Ты криптоаналитик. Дай прогноз кратко и профессионально."},
                 {"role": "user", "content": prompt}
             ]
         )
-        return response["choices"][0]["message"]["content"]
+        return response.choices[0].message["content"]
     except Exception as e:
         return f"❌ Ошибка ChatGPT: {e}"
 
@@ -112,8 +135,10 @@ def process_signal(chat_id, interval):
     signal, votes = make_prediction(indicators, last)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?, ?, ?, ?, ?, ?)",
-                   (timestamp, last, signal, None, ",".join(votes), interval))
+    cursor.execute(
+        "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?, ?, ?, ?, ?, ?)",
+        (timestamp, last, signal, None, ",".join(votes), interval)
+    )
     conn.commit()
 
     chatgpt_response = ask_chatgpt(indicators, votes)
@@ -121,7 +146,7 @@ def process_signal(chat_id, interval):
     text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
     for key, val in indicators.items():
         text += f"🔹 {key}: {round(val, 2)}\n"
-    text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal == 'LONG' else '🔻 SHORT' if signal == 'SHORT' else '⚪️ NEUTRAL'}"
+    text += f"\n📌 Прогноз на следующие {interval} минут: {'🔺 LONG' if signal=='LONG' else '🔻 SHORT' if signal=='SHORT' else '⚪️ NEUTRAL'}"
     text += f"\n🧠 Голоса: {votes}\n🤖 ChatGPT: {chatgpt_response}"
 
     bot.send_message(chat_id, text)
@@ -140,18 +165,13 @@ def main_keyboard():
     )
     return markup
 
-# === Команда /start ===
 @bot.message_handler(commands=['start'])
 def start(message):
-    try:
-        if message.from_user.id != AUTHORIZED_USER_ID:
-            bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
-            return
-        bot.send_message(message.chat.id, "✅ Бот запущен!\nВыбери действие:", reply_markup=main_keyboard())
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Ошибка запуска: {e}")
+    if message.from_user.id != AUTHORIZED_USER_ID:
+        bot.send_message(message.chat.id, "⛔ У вас нет доступа к этому боту.")
+        return
+    bot.send_message(message.chat.id, "✅ Бот запущен!\nВыбери действие:", reply_markup=main_keyboard())
 
-# === Обработка кнопок ===
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     if call.from_user.id != AUTHORIZED_USER_ID:
@@ -168,40 +188,34 @@ def handle_callback(call):
     elif call.data == "accuracy":
         show_accuracy(call.message.chat.id)
 
-# === Проверка прогноза ===
 def verify_predictions(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
     rows = cursor.fetchall()
     updated = 0
-
-    for row in rows:
-        id_, ts, old_price = row
+    for id_, ts, old_price in rows:
         ts_time = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         if now - ts_time >= timedelta(minutes=15):
             candles = get_candles()
             new_close = float(candles[-1][4])
-            actual = "LONG" if new_close > old_price else "SHORT" if new_close < old_price else "NEUTRAL"
+            actual = ("LONG" if new_close > old_price else
+                      "SHORT" if new_close < old_price else "NEUTRAL")
             cursor.execute("UPDATE predictions SET actual = ? WHERE id = ?", (actual, id_))
             updated += 1
-
     conn.commit()
     bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
 
-# === Точность ===
 def show_accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
     if not rows:
         bot.send_message(chat_id, "📊 Ещё нет проверенных прогнозов.")
         return
-
     total = len(rows)
     correct = sum(1 for r in rows if r[0] == r[1])
     acc = round(correct / total * 100, 2)
     bot.send_message(chat_id, f"✅ Точность: {acc}% ({correct}/{total})")
 
-# === Автообновление прогноза каждые 15 мин ===
 def auto_predict():
     while True:
         try:
@@ -211,6 +225,4 @@ def auto_predict():
             print(f"[AutoPredict Error] {e}")
 
 # threading.Thread(target=auto_predict).start()
-
-# === Запуск бота ===
 bot.polling(none_stop=True)
