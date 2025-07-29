@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # === Загрузка окружения ===
 load_dotenv()
 AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
+money = telebot.TeleBot(os.getenv("TELEGRAM_BOT_TOKEN"))
 session = HTTP(api_key=os.getenv("BYBIT_API_KEY"), api_secret=os.getenv("BYBIT_API_SECRET"))
 
 # === Инициализация БД ===
@@ -72,7 +72,6 @@ def analyze_indicators(df):
 
 # === Взвешенное голосование ===
 def make_weighted_prediction(indicators_dict, last_close):
-    # raw votes for record
     votes = []
     ind = indicators_dict
     if ind["RSI"] > 60: votes.append("LONG")
@@ -90,7 +89,6 @@ def make_weighted_prediction(indicators_dict, last_close):
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
     if ind["WR"] < -80: votes.append("LONG")
     elif ind["WR"] > -20: votes.append("SHORT")
-    # compute weighted score
     score = 0.0
     for name, vote in zip(indicators, votes):
         w = weights.get(name, 0)
@@ -110,21 +108,17 @@ def process_signal(chat_id, interval):
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_weighted_prediction(indicators_vals, last)
-
-    # save
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?,?,?,?,?,?)",
         (ts, last, signal, None, ",".join(votes), interval)
     )
     conn.commit()
-
-    # send
     text = f"📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
     for k,v in indicators_vals.items(): text += f"🔹 {k}: {round(v,2)}\n"
     text += f"\n📌 Сигнал: {'🔺 LONG' if signal=='LONG' else '🔻 SHORT'}"
     text += f"\n🧠 Голоса: {votes}"
-    bot.send_message(chat_id, text)
+    money.send_message(chat_id, text)
 
 # === Auto-entry notifications ===
 def auto_entry_signal():
@@ -144,7 +138,7 @@ def auto_entry_signal():
                     f"RSI: {round(ind_vals['RSI'],2)}, EMA21: {round(ind_vals['EMA21'],2)}\n"
                     f"Доля LONG: {votes.count('LONG')}/{len(votes)}"
                 )
-                bot.send_message(AUTHORIZED_USER_ID, entry_text, parse_mode="Markdown")
+                money.send_message(AUTHORIZED_USER_ID, entry_text, parse_mode="Markdown")
                 entry_triggered = True
             if not can_enter:
                 entry_triggered = False
@@ -179,7 +173,7 @@ def daily_summary():
         ).fetchall()
         tot = len(rows); corr = sum(1 for s,a in rows if s==a)
         text = (f"📅 Отчёт за {ds}: Всего {tot}, Попаданий {corr}, Точность {round(corr/tot*100,2)}%" if tot else f"📅 Отчёт за {ds}: нет данных")
-        bot.send_message(AUTHORIZED_USER_ID, text)
+        money.send_message(AUTHORIZED_USER_ID, text)
 threading.Thread(target=daily_summary, daemon=True).start()
 
 # === Reply Keyboard ===
@@ -190,13 +184,13 @@ def make_reply_keyboard():
     kb.row("Export CSV","Export Excel")
     return kb
 
-@bot.message_handler(commands=['start'])
+@money.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id != AUTHORIZED_USER_ID:
-        return bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
-    bot.send_message(message.chat.id, "✅ Бот запущен!", reply_markup=make_reply_keyboard())
+        return money.send_message(message.chat.id, "⛔ У вас нет доступа.")
+    money.send_message(message.chat.id, "✅ Бот запущен!", reply_markup=make_reply_keyboard())
 
-@bot.message_handler(func=lambda m: m.chat.id == AUTHORIZED_USER_ID)
+@money.message_handler(func=lambda m: m.chat.id == AUTHORIZED_USER_ID)
 def handle_buttons(message):
     t = message.text.strip()
     if t == "15м": process_signal(message.chat.id, "15")
@@ -206,10 +200,10 @@ def handle_buttons(message):
     elif t == "Точность": show_accuracy(message.chat.id)
     elif t == "Export CSV": export_csv(message)
     elif t == "Export Excel": export_excel(message)
-    else: bot.send_message(message.chat.id, "ℹ️ Используй клавиатуру.", reply_markup=make_reply_keyboard())
+    else: money.send_message(message.chat.id, "ℹ️ Используй клавиатуру.", reply_markup=make_reply_keyboard())
 
-# === Remaining handlers (verify_predictions, show_accuracy, export_csv, export_excel) ===
-# ... implement as before, unchanged ...
+# === Остальные хендлеры (verify_predictions, show_accuracy, export_csv, export_excel) ===
+# Реализовать как прежде, заменив bot. на money.
 
-bot.polling(none_stop=True)
+money.polling(none_stop=True)
 ```
