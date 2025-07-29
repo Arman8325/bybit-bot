@@ -36,19 +36,20 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# === Хранение последних prompt’ов по таймфрейму ===
-last_prompts = {}  # { interval: prompt_string }
+# === Глобальные переменные ===
+last_prompts = {}          # хранит последний prompt для каждого таймфрейма
+last_summary_date = None   # дата последнего отправленного ежедневного отчёта
 
 # === Получить свечи ===
 def get_candles(symbol="BTCUSDT", interval="15", limit=100):
     data = session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     return data["result"]["list"]
 
-# === Индикаторы ===
+# === Анализ индикаторов ===
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
+    df["high"]  = df["high"].astype(float)
+    df["low"]   = df["low"].astype(float)
     return {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
         "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
@@ -90,7 +91,7 @@ def make_prediction(ind, last_close):
     else:
         return "NEUTRAL", votes
 
-# === ChatGPT‑анализ с anti‑spam по interval ===
+# === ChatGPT‑анализ с anti‑spam ===
 def ask_chatgpt(indicators, votes, interval):
     prompt = "На основе следующих индикаторов и голосов сделай краткий прогноз (LONG/SHORT/NEUTRAL) и поясни.\n\n"
     for k, v in indicators.items():
@@ -116,8 +117,8 @@ def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
     df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
     indicators = analyze_indicators(df)
-    last = float(df["close"].iloc[-1])
-    prev = float(df["close"].iloc[-2])
+    last  = float(df["close"].iloc[-1])
+    prev  = float(df["close"].iloc[-2])
     signal, votes = make_prediction(indicators, last)
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
@@ -146,15 +147,15 @@ def start(message):
     if message.from_user.id != AUTHORIZED_USER_ID:
         bot.send_message(message.chat.id, "⛔ У вас нет доступа.")
         return
-    bot.send_message(message.chat.id,
-                     "✅ Бот запущен! Выбери действие на клавиатуре ниже:",
-                     reply_markup=make_reply_keyboard())
+    bot.send_message(
+        message.chat.id,
+        "✅ Бот запущен! Выбери действие на клавиатуре ниже:",
+        reply_markup=make_reply_keyboard()
+    )
 
-# === Обработка нажатий ===
 @bot.message_handler(func=lambda m: m.chat.id == AUTHORIZED_USER_ID)
 def handle_buttons(message):
     text = message.text.strip()
-
     if text == "15м":
         process_signal(message.chat.id, "15")
     elif text == "30м":
@@ -170,9 +171,11 @@ def handle_buttons(message):
     elif text == "Export Excel":
         export_excel(message)
     else:
-        bot.send_message(message.chat.id,
-                         "ℹ️ Используй клавиатуру для управления ботом.",
-                         reply_markup=make_reply_keyboard())
+        bot.send_message(
+            message.chat.id,
+            "ℹ️ Используй клавиатуру для управления ботом.",
+            reply_markup=make_reply_keyboard()
+        )
 
 # === Проверка прогнозов ===
 def verify_predictions(chat_id):
@@ -228,34 +231,41 @@ def auto_predict():
     while True:
         try:
             process_signal(AUTHORIZED_USER_ID, "15")
-            time.sleep(900)
+            time.sleep(900)    # ждем 15 минут после успешного прогноза
         except Exception as e:
-            print(f"[AutoPredict Error] {e}"); time.sleep(60)
+            print(f"[AutoPredict Error] {e}")
+            time.sleep(900)    # ждем тоже 15 минут после ошибки
 
 threading.Thread(target=auto_predict, daemon=True).start()
 
 # === Ежедневный отчёт по точности ===
 def daily_summary():
+    global last_summary_date
     while True:
         now = datetime.utcnow()
         next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         time.sleep((next_run - now).total_seconds())
-        start = (next_run - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
-        end   = next_run.strftime("%Y-%m-%d 00:00:00")
+        date_str = (next_run - timedelta(days=1)).strftime("%Y-%m-%d")
+        if last_summary_date == date_str:
+            continue
+        last_summary_date = date_str
+        start = f"{date_str} 00:00:00"
+        end   = f"{date_str} 23:59:59"
         rows = cursor.execute("""
             SELECT signal, actual
-            FROM predictions
-            WHERE timestamp >= ? AND timestamp < ? AND actual IS NOT NULL
+              FROM predictions
+             WHERE timestamp >= ? AND timestamp <= ? AND actual IS NOT NULL
         """, (start, end)).fetchall()
-        total = len(rows); correct = sum(1 for s, a in rows if s == a)
+        total   = len(rows)
+        correct = sum(1 for s, a in rows if s == a)
         if total:
             acc = round(correct / total * 100, 2)
-            text = (f"📅 Ежедневный отчёт за {start.split()[0]}:\n"
+            text = (f"📅 Ежедневный отчёт за {date_str}:\n"
                     f"  Всего прогнозов: {total}\n"
                     f"  Попаданий: {correct}\n"
                     f"  Точность: {acc}%")
         else:
-            text = f"📅 Ежедневный отчёт за {start.split()[0]}: нет проверенных прогнозов."
+            text = f"📅 Ежедневный отчёт за {date_str}: нет проверенных прогнозов."
         bot.send_message(AUTHORIZED_USER_ID, text)
 
 threading.Thread(target=daily_summary, daemon=True).start()
