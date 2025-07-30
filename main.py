@@ -33,45 +33,45 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# === Для дедупликации сигналов ===
-last_signal_ts = {}  # хранит для каждого таймфрейма timestamp последнего бара
+# === Для дедупликации сигналов по 15‑мин периодам ===
+last_period = {}  # {interval: period_index}
 
 # === Утилиты ===
-def get_candles(symbol="BTCUSDT", interval="15", limit=100):
-    return session.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)["result"]["list"]
+def get_candles(interval="15", limit=100):
+    return session.get_kline(category="linear", symbol="BTCUSDT", interval=interval, limit=limit)["result"]["list"]
 
 def analyze_indicators(df):
     df["close"] = df["close"].astype(float)
     df["high"]  = df["high"].astype(float)
     df["low"]   = df["low"].astype(float)
     return {
-        "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
-        "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
-        "ADX": ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1],
-        "CCI": ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1],
+        "RSI":    ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
+        "EMA21":  ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
+        "ADX":    ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1],
+        "CCI":    ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1],
         "Stochastic": ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1],
-        "Momentum": ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1],
-        "BOLL_UP": ta.volatility.BollingerBands(df["close"]).bollinger_hband().iloc[-1],
-        "BOLL_LOW": ta.volatility.BollingerBands(df["close"]).bollinger_lband().iloc[-1],
-        "SAR": ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1],
-        "MACD": ta.trend.MACD(df["close"]).macd().iloc[-1],
-        "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
+        "Momentum":    ta.momentum.ROCIndicator(df["close"]).roc().iloc[-1],
+        "BOLL_UP":     ta.volatility.BollingerBands(df["close"]).bollinger_hband().iloc[-1],
+        "BOLL_LOW":    ta.volatility.BollingerBands(df["close"]).bollinger_lband().iloc[-1],
+        "SAR":         ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1],
+        "MACD":        ta.trend.MACD(df["close"]).macd().iloc[-1],
+        "WR":          ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1],
     }
 
-def make_prediction(ind, last_close):
+def make_prediction(ind, last):
     votes = []
     if ind["RSI"] > 60: votes.append("LONG")
     elif ind["RSI"] < 40: votes.append("SHORT")
-    votes.append("LONG" if last_close > ind["EMA21"] else "SHORT")
+    votes.append("LONG" if last > ind["EMA21"] else "SHORT")
     if ind["ADX"] > 25: votes.append("LONG")
     if ind["CCI"] > 100: votes.append("LONG")
     elif ind["CCI"] < -100: votes.append("SHORT")
     if ind["Stochastic"] > 80: votes.append("SHORT")
     elif ind["Stochastic"] < 20: votes.append("LONG")
     votes.append("LONG" if ind["Momentum"] > 0 else "SHORT")
-    if last_close > ind["BOLL_UP"]: votes.append("SHORT")
-    elif last_close < ind["BOLL_LOW"]: votes.append("LONG")
-    votes.append("LONG" if last_close > ind["SAR"] else "SHORT")
+    if last > ind["BOLL_UP"]: votes.append("SHORT")
+    elif last < ind["BOLL_LOW"]: votes.append("LONG")
+    votes.append("LONG" if last > ind["SAR"] else "SHORT")
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
     if ind["WR"] < -80: votes.append("LONG")
     elif ind["WR"] > -20: votes.append("SHORT")
@@ -80,26 +80,27 @@ def make_prediction(ind, last_close):
     if sc > lc: return "SHORT", votes
     return "NEUTRAL", votes
 
-def is_entry_opportunity(ind, last_close, votes):
+def is_entry_opportunity(ind, last, votes):
     return votes.count("LONG") == len(votes)  # 100% LONG
 
-# === Обработка и отправка сигнала ===
+# === Обработка сигнала ===
 def process_signal(chat_id, interval):
     raw = get_candles(interval=interval)
     df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
-
-    # дедупликация: не шлём повторно для того же бара
-    last_bar_ts = int(df["timestamp"].iloc[-1])
-    if last_signal_ts.get(interval) == last_bar_ts:
+    # вычисляем индекс 15‑минутного периода на Unix-времени
+    period_sec = int(interval) * 60
+    last_ts = int(df["timestamp"].iloc[-1])
+    period_index = last_ts // period_sec
+    # если уже отправляли для этого периода — пропускаем
+    if last_period.get(interval) == period_index:
         return
-    last_signal_ts[interval] = last_bar_ts
+    last_period[interval] = period_index
 
     ind = analyze_indicators(df)
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind, last)
 
-    # сохраняем
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?,?,?,?,?,?)",
@@ -107,25 +108,24 @@ def process_signal(chat_id, interval):
     )
     conn.commit()
 
-    # отправляем
     text = (
         f"⏱ Таймфрейм: {interval}м\n"
         f"📈 Закрытие: {last}\n"
         f"📉 Предыдущее: {prev}\n"
     )
-    for k, v in ind.items():
+    for k,v in ind.items():
         text += f"🔹 {k}: {round(v,2)}\n"
     text += f"\n📌 Прогноз на {interval}м: "
     text += "🔺 LONG" if signal=="LONG" else "🔻 SHORT" if signal=="SHORT" else "⚪️ NEUTRAL"
     text += f"\n🧠 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-    # точка входа за 1 мин до новой свечи
-    if is_entry_opportunity(ind, last, votes):
+    # вход за 1 мин до смены свечи, если 100% LONG
+    now = datetime.utcnow()
+    if now.minute % int(interval) == int(interval)-1 and is_entry_opportunity(ind, last, votes):
         entry_text = (
             "🔔 *100% Точка входа LONG!*  \n"
-            f"Цена: {last}\n"
-            f"Голоса: {votes}"
+            f"Цена: {last}\nГолоса: {votes}"
         )
         bot.send_message(chat_id, entry_text, parse_mode="Markdown")
 
@@ -142,33 +142,28 @@ def verify(chat_id):
             cursor.execute("UPDATE predictions SET actual=? WHERE id=?", (actual, _id))
             updated += 1
     conn.commit()
-    bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
+    bot.send_message(chat_id, f"🔍 Обновлено: {updated}")
 
 def accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
     if not rows:
         return bot.send_message(chat_id, "📊 Нет проверенных.")
-    total = len(rows)
-    correct = sum(1 for s,a in rows if s==a)
+    total = len(rows); correct = sum(1 for s,a in rows if s==a)
     bot.send_message(chat_id, f"✅ Точность: {round(correct/total*100,2)}% ({correct}/{total})")
 
 def export_csv(m):
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
     if df.empty:
         return bot.send_message(m.chat.id, "📁 Нет данных.")
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    buf = BytesIO(); df.to_csv(buf, index=False); buf.seek(0)
     bot.send_document(m.chat.id, ("signals.csv", buf))
 
 def export_excel(m):
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
     if df.empty:
         return bot.send_message(m.chat.id, "📁 Нет данных.")
-    buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="Signals")
-    buf.seek(0)
+    buf = BytesIO(); df.to_excel(buf, index=False, sheet_name="Signals"); buf.seek(0)
     bot.send_document(m.chat.id, ("signals.xlsx", buf))
 
 def make_reply_keyboard():
@@ -182,30 +177,30 @@ def make_reply_keyboard():
 @bot.message_handler(commands=['start'])
 def start(m):
     if m.from_user.id != AUTHORIZED_USER_ID:
-        return bot.send_message(m.chat.id, "⛔ У вас нет доступа.")
+        return bot.send_message(m.chat.id, "⛔ Нет доступа.")
     bot.send_message(m.chat.id, "✅ Бот запущен!", reply_markup=make_reply_keyboard())
 
 @bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
 def handler(m):
     cmd = m.text.strip()
-    if cmd=="15м":
+    if cmd == "15м":
         process_signal(m.chat.id, "15")
-    elif cmd=="30м":
+    elif cmd == "30м":
         process_signal(m.chat.id, "30")
-    elif cmd=="1ч":
+    elif cmd == "1ч":
         process_signal(m.chat.id, "60")
-    elif cmd=="Проверка":
+    elif cmd == "Проверка":
         verify(m.chat.id)
-    elif cmd=="Точность":
+    elif cmd == "Точность":
         accuracy(m.chat.id)
-    elif cmd=="Export CSV":
+    elif cmd == "Export CSV":
         export_csv(m)
-    elif cmd=="Export Excel":
+    elif cmd == "Export Excel":
         export_excel(m)
     else:
-        bot.send_message(m.chat.id, "ℹ️ Используйте клавиатуру.", reply_markup=make_reply_keyboard())
+        bot.send_message(m.chat.id, "ℹ️ Клавиатуру!", reply_markup=make_reply_keyboard())
 
-# === Авто‑прогноз 15м ===
+# === Авто‑прогноз ===
 def auto_pred():
     while True:
         try:
@@ -215,30 +210,22 @@ def auto_pred():
             time.sleep(900)
 threading.Thread(target=auto_pred, daemon=True).start()
 
-# === Авто‑входовые уведомления за 1 мин до новой свечи ===
-def auto_entry_signal():
-    while True:
-        # обрабатываться будет внутри process_signal
-        time.sleep(60)
-threading.Thread(target=auto_entry_signal, daemon=True).start()
-
 # === Ежедневный отчёт ===
 last_summary_date = None
 def daily_summary():
     global last_summary_date
     while True:
         now = datetime.utcnow()
-        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
-        ds = (nxt - timedelta(days=1)).strftime("%Y-%m-%d")
+        nxt = (now + timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+        time.sleep((nxt-now).total_seconds())
+        ds = (nxt-timedelta(days=1)).strftime("%Y-%m-%d")
         if ds != last_summary_date:
             last_summary_date = ds
             rows = cursor.execute(
                 "SELECT signal,actual FROM predictions WHERE timestamp LIKE ? AND actual IS NOT NULL",
                 (ds+"%",)
             ).fetchall()
-            tot = len(rows)
-            corr = sum(1 for s,a in rows if s==a)
+            tot = len(rows); corr = sum(1 for s,a in rows if s==a)
             txt = (
                 f"📅 Отчёт за {ds}: Всего {tot}, Попаданий {corr}, Точность {round(corr/tot*100,2)}%"
                 if tot else f"📅 Отчёт за {ds}: нет данных"
