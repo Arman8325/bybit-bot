@@ -79,11 +79,10 @@ def make_prediction(ind, last_close):
     if sc > lc: return "SHORT", votes
     return "NEUTRAL", votes
 
-# === Условие точки входа 90% ===
+# === Условие точки входа 100% ===
 def is_entry_opportunity(ind, last_close, votes):
-    if ind["RSI"] >= 30: return False
-    if last_close >= ind["EMA21"]: return False
-    return votes.count("LONG") / len(votes) >= 0.9
+    # теперь все голоса должны быть LONG
+    return votes.count("LONG") == len(votes)
 
 # === Обработка сигнала ===
 def process_signal(chat_id, interval):
@@ -94,7 +93,6 @@ def process_signal(chat_id, interval):
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind, last)
 
-    # Сохраняем в БД
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe) VALUES (?,?,?,?,?,?)",
@@ -102,7 +100,6 @@ def process_signal(chat_id, interval):
     )
     conn.commit()
 
-    # Текст с указанием таймфрейма
     text = (
         f"⏱ Таймфрейм: {interval}м\n"
         f"📈 Закрытие: {last}\n"
@@ -115,7 +112,7 @@ def process_signal(chat_id, interval):
     text += f"\n🧠 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-# === Проверка нерешённых прогнозов ===
+# === Проверка, точность, экспорт, клавиатура ===
 def verify(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
@@ -130,44 +127,33 @@ def verify(chat_id):
     conn.commit()
     bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
 
-# === Точность ===
 def accuracy(chat_id):
     cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
     rows = cursor.fetchall()
     if not rows:
-        return bot.send_message(chat_id, "📊 Ещё нет проверенных прогнозов.")
-    total = len(rows)
-    correct = sum(1 for s,a in rows if s==a)
+        return bot.send_message(chat_id, "📊 Нет проверенных.")
+    total = len(rows); correct = sum(1 for s,a in rows if s==a)
     bot.send_message(chat_id, f"✅ Точность: {round(correct/total*100,2)}% ({correct}/{total})")
 
-# === Экспорт CSV/Excel ===
 def export_csv(m):
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
-    if df.empty:
-        return bot.send_message(m.chat.id, "📁 Нет данных для экспорта.")
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    if df.empty: return bot.send_message(m.chat.id, "📁 Нет данных.")
+    buf = BytesIO(); df.to_csv(buf, index=False); buf.seek(0)
     bot.send_document(m.chat.id, ("signals.csv", buf))
 
 def export_excel(m):
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
-    if df.empty:
-        return bot.send_message(m.chat.id, "📁 Нет данных для экспорта.")
-    buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="Signals")
-    buf.seek(0)
+    if df.empty: return bot.send_message(m.chat.id, "📁 Нет данных.")
+    buf = BytesIO(); df.to_excel(buf, index=False, sheet_name="Signals"); buf.seek(0)
     bot.send_document(m.chat.id, ("signals.xlsx", buf))
 
-# === Клавиатура ===
 def make_reply_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("15м", "30м", "1ч")
-    kb.row("Проверка", "Точность")
-    kb.row("Export CSV", "Export Excel")
+    kb.row("15м","30м","1ч")
+    kb.row("Проверка","Точность")
+    kb.row("Export CSV","Export Excel")
     return kb
 
-# === Хендлеры ===
 @bot.message_handler(commands=['start'])
 def start(m):
     if m.from_user.id != AUTHORIZED_USER_ID:
@@ -177,22 +163,14 @@ def start(m):
 @bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
 def handler(m):
     cmd = m.text.strip()
-    if cmd == "15м":
-        process_signal(m.chat.id, "15")
-    elif cmd == "30м":
-        process_signal(m.chat.id, "30")
-    elif cmd == "1ч":
-        process_signal(m.chat.id, "60")
-    elif cmd == "Проверка":
-        verify(m.chat.id)
-    elif cmd == "Точность":
-        accuracy(m.chat.id)
-    elif cmd == "Export CSV":
-        export_csv(m)
-    elif cmd == "Export Excel":
-        export_excel(m)
-    else:
-        bot.send_message(m.chat.id, "ℹ️ Используйте клавиатуру.", reply_markup=make_reply_keyboard())
+    if cmd == "15м": process_signal(m.chat.id, "15")
+    elif cmd == "30м": process_signal(m.chat.id, "30")
+    elif cmd == "1ч": process_signal(m.chat.id, "60")
+    elif cmd == "Проверка": verify(m.chat.id)
+    elif cmd == "Точность": accuracy(m.chat.id)
+    elif cmd == "Export CSV": export_csv(m)
+    elif cmd == "Export Excel": export_excel(m)
+    else: bot.send_message(m.chat.id, "ℹ️ Используйте клавиатуру.", reply_markup=make_reply_keyboard())
 
 # === Авто‑прогноз 15м ===
 def auto_pred():
@@ -202,10 +180,9 @@ def auto_pred():
             time.sleep(900)
         except:
             time.sleep(900)
-
 threading.Thread(target=auto_pred, daemon=True).start()
 
-# === Авто‑входовые уведомления за 1 мин до новой свечи (90% условие) ===
+# === Авто‑вход за 1 мин до новой свечи (100% условие) ===
 entry_flag = False
 entry_time = 0
 COOLDOWN = 15 * 60
@@ -220,19 +197,18 @@ def auto_entry_signal():
             ind = analyze_indicators(df)
             last = float(df["close"].iloc[-1])
             _, votes = make_prediction(ind, last)
-            can = is_entry_opportunity(ind, last, votes)
-            ts = time.time()
-            if can and (not entry_flag or ts - entry_time >= COOLDOWN):
-                txt = (
-                    "🔔 *Точка входа LONG!*  \n"
-                    f"Цена: {last}\n"
-                    f"RSI: {round(ind['RSI'],2)}, EMA21: {round(ind['EMA21'],2)}\n"
-                    f"Доля LONG: {votes.count('LONG')}/{len(votes)} (≥90%)"
-                )
-                bot.send_message(AUTHORIZED_USER_ID, txt, parse_mode="Markdown")
-                entry_flag = True
-                entry_time = ts
-            if not can:
+            if is_entry_opportunity(ind, last, votes):
+                ts = time.time()
+                if not entry_flag or ts - entry_time >= COOLDOWN:
+                    msg = (
+                        "🔔 *100% Точка входа LONG!*  \n"
+                        f"Цена: {last}\n"
+                        f"Голоса: {votes}"
+                    )
+                    bot.send_message(AUTHORIZED_USER_ID, msg, parse_mode="Markdown")
+                    entry_flag = True
+                    entry_time = ts
+            else:
                 entry_flag = False
                 entry_time = 0
             time.sleep(60 - now.second)
@@ -243,7 +219,6 @@ threading.Thread(target=auto_entry_signal, daemon=True).start()
 
 # === Ежедневный отчёт ===
 last_summary_date = None
-
 def daily_summary():
     global last_summary_date
     while True:
@@ -255,10 +230,9 @@ def daily_summary():
             last_summary_date = ds
             rows = cursor.execute(
                 "SELECT signal,actual FROM predictions WHERE timestamp LIKE ? AND actual IS NOT NULL",
-                (ds + "%",)
+                (ds+"%",)
             ).fetchall()
-            tot = len(rows)
-            corr = sum(1 for s,a in rows if s==a)
+            tot = len(rows); corr = sum(1 for s,a in rows if s==a)
             text = (
                 f"📅 Отчёт за {ds}: Всего {tot}, Попаданий {corr}, Точность {round(corr/tot*100,2)}%"
                 if tot else f"📅 Отчёт за {ds}: нет данных"
@@ -267,5 +241,5 @@ def daily_summary():
 
 threading.Thread(target=daily_summary, daemon=True).start()
 
-# === Запуск бота ===
+# === Старт поллинга ===
 bot.polling(none_stop=True)
