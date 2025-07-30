@@ -33,18 +33,16 @@ CREATE TABLE IF NOT EXISTS predictions (
 """)
 conn.commit()
 
-# === Дедупликация сигналов ===
+# === Для дедупликации сигналов по периодам ===
 last_period = {}
 
 # === Утилиты ===
 def get_candles(interval="15", limit=100):
     return session.get_kline(category="linear", symbol="BTCUSDT", interval=interval, limit=limit)["result"]["list"]
 
+
 def analyze_indicators(df):
-    df["close"] = df["close"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df = df.astype({"close":"float", "high":"float", "low":"float", "volume":"float"})
     # базовые индикаторы
     inds = {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
@@ -58,43 +56,58 @@ def analyze_indicators(df):
         "BOLL_LOW": ta.volatility.BollingerBands(df["close"]).bollinger_lband().iloc[-1],
         "SAR": ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1],
         "MACD": ta.trend.MACD(df["close"]).macd().iloc[-1],
-        "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1]
+        "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1],
+        # объёмный фильтр
+        "VOL_MA20": df["volume"].rolling(20).mean().iloc[-1]
     }
-    # фонд объема
-    inds["VOL_MA20"] = df["volume"].rolling(20).mean().iloc[-1]
     return inds
 
-# === Голосование ===
-def make_prediction(ind, last):
+
+def make_prediction(ind, last_close):
     votes = []
-    if ind["RSI"] > 60: votes.append("LONG")
-    elif ind["RSI"] < 40: votes.append("SHORT")
-    votes.append("LONG" if last > ind["EMA21"] else "SHORT")
-    if ind["ADX"] > 25: votes.append("LONG")
-    if ind["CCI"] > 100: votes.append("LONG")
-    elif ind["CCI"] < -100: votes.append("SHORT")
-    if ind["Stochastic"] > 80: votes.append("SHORT")
-    elif ind["Stochastic"] < 20: votes.append("LONG")
+    if ind["RSI"] > 60:
+        votes.append("LONG")
+    elif ind["RSI"] < 40:
+        votes.append("SHORT")
+    votes.append("LONG" if last_close > ind["EMA21"] else "SHORT")
+    if ind["ADX"] > 25:
+        votes.append("LONG")
+    if ind["CCI"] > 100:
+        votes.append("LONG")
+    elif ind["CCI"] < -100:
+        votes.append("SHORT")
+    if ind["Stochastic"] > 80:
+        votes.append("SHORT")
+    elif ind["Stochastic"] < 20:
+        votes.append("LONG")
     votes.append("LONG" if ind["Momentum"] > 0 else "SHORT")
-    if last > ind["BOLL_UP"]: votes.append("SHORT")
-    elif last < ind["BOLL_LOW"]: votes.append("LONG")
-    votes.append("LONG" if last > ind["SAR"] else "SHORT")
+    if last_close > ind["BOLL_UP"]:
+        votes.append("SHORT")
+    elif last_close < ind["BOLL_LOW"]:
+        votes.append("LONG")
+    votes.append("LONG" if last_close > ind["SAR"] else "SHORT")
     votes.append("LONG" if ind["MACD"] > 0 else "SHORT")
-    if ind["WR"] < -80: votes.append("LONG")
-    elif ind["WR"] > -20: votes.append("SHORT")
-    lc, sc = votes.count("LONG"), votes.count("SHORT")
-    if lc > sc: return "LONG", votes
-    if sc > lc: return "SHORT", votes
+    if ind["WR"] < -80:
+        votes.append("LONG")
+    elif ind["WR"] > -20:
+        votes.append("SHORT")
+    lc = votes.count("LONG")
+    sc = votes.count("SHORT")
+    if lc > sc:
+        return "LONG", votes
+    if sc > lc:
+        return "SHORT", votes
     return "NEUTRAL", votes
 
-# === Условие точки входа 100% ===
-def is_entry_opportunity(ind, last, votes):
+
+def is_entry_opportunity(ind, last_close, votes):
+    # 100% LONG
     return votes.count("LONG") == len(votes)
 
 # === Обработка сигнала ===
 def process_signal(chat_id, interval):
-    raw = get_candles(interval=interval)
-    df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume","turnover"])
+    data = get_candles(interval=interval)
+    df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume","turnover"])
     # дедупликация по 15‑минутному периоду
     period = int(interval) * 60
     last_ts = int(df["timestamp"].iloc[-1])
@@ -108,10 +121,12 @@ def process_signal(chat_id, interval):
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind, last)
 
-    # Фильтр по тренду: только в направлении EMA100
-    if last > ind["EMA100"] and signal != "LONG": return
-    if last < ind["EMA100"] and signal != "SHORT": return
-    # Фильтр по объему: текущий объем должен быть >1.5*VOL_MA20
+    # тренд-фильтр EMA100
+    if last > ind["EMA100"] and signal != "LONG":
+        return
+    if last < ind["EMA100"] and signal != "SHORT":
+        return
+    # объёмный фильтр
     if df["volume"].iloc[-1] < 1.5 * ind["VOL_MA20"]:
         return
 
@@ -122,45 +137,136 @@ def process_signal(chat_id, interval):
     )
     conn.commit()
 
-    # отправка
     text = f"⏱ Таймфрейм: {interval}м\n📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
-    for k,v in ind.items(): text += f"🔹 {k}: {round(v,2)}\n"
+    for k, v in ind.items():
+        text += f"🔹 {k}: {round(v,2)}\n"
     text += f"\n📌 Прогноз на {interval}м: "
     text += "🔺 LONG" if signal=="LONG" else "🔻 SHORT" if signal=="SHORT" else "⚪️ NEUTRAL"
     text += f"\n🧠 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-    # точка входа за 1 мин до новой свечи
+    # вход за 1 мин до смены свечи
     now = datetime.utcnow()
-    if now.minute % int(interval) == int(interval) - 1 and is_entry_opportunity(ind, last, votes):
+    if now.minute % int(interval) == int(interval)-1 and is_entry_opportunity(ind, last, votes):
         entry = (
             "🔔 *100% Точка входа LONG!*  \n"
             f"Цена: {last}\nГолоса: {votes}"
         )
         bot.send_message(chat_id, entry, parse_mode="Markdown")
 
-# === Проверка, точность, экспорт ===
-def verify(chat_id): ...
-def accuracy(chat_id): ...
-def export_csv(m): ...
-def export_excel(m): ...
+# === Проверка ===
+def verify(chat_id):
+    now = datetime.utcnow()
+    cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
+    updated = 0
+    for _id, ts, price in cursor.fetchall():
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        if now - dt >= timedelta(minutes=15):
+            nc = float(get_candles(interval="15")[-1][4])
+            actual = "LONG" if nc>price else "SHORT" if nc<price else "NEUTRAL"
+            cursor.execute("UPDATE predictions SET actual=? WHERE id=?", (actual, _id))
+            updated += 1
+    conn.commit()
+    bot.send_message(chat_id, f"🔍 Обновлено прогнозов: {updated}")
 
-def make_reply_keyboard(): ...
+# === Точность ===
+def accuracy(chat_id):
+    cursor.execute("SELECT signal, actual FROM predictions WHERE actual IS NOT NULL")
+    rows = cursor.fetchall()
+    if not rows:
+        return bot.send_message(chat_id, "📊 Нет проверенных.")
+    total = len(rows)
+    correct = sum(1 for s,a in rows if s==a)
+    bot.send_message(chat_id, f"✅ Точность: {round(correct/total*100,2)}% ({correct}/{total})")
+
+# === Экспорт CSV/Excel ===
+def export_csv(m):
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    if df.empty:
+        return bot.send_message(m.chat.id, "📁 Нет данных.")
+    buf = BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    bot.send_document(m.chat.id, ("signals.csv", buf))
+
+def export_excel(m):
+    df = pd.read_sql_query("SELECT * FROM predictions", conn)
+    if df.empty:
+        return bot.send_message(m.chat.id, "📁 Нет данных.")
+    buf = BytesIO()
+    df.to_excel(buf, index=False, sheet_name="Signals")
+    buf.seek(0)
+    bot.send_document(m.chat.id, ("signals.xlsx", buf))
+
+# === Клавиатура ===
+def make_reply_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("15м","30м","1ч")
+    kb.row("Проверка","Точность")
+    kb.row("Export CSV","Export Excel")
+    return kb
 
 # === Хендлеры ===
 @bot.message_handler(commands=['start'])
-def start(m): ...
+def start(m):
+    if m.from_user.id != AUTHORIZED_USER_ID:
+        return bot.send_message(m.chat.id, "⛔ У вас нет доступа.")
+    bot.send_message(m.chat.id, "✅ Бот запущен!", reply_markup=make_reply_keyboard())
 
 @bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
-def handler(m): ...
+def handler(m):
+    cmd = m.text.strip()
+    if cmd == "15м":
+        process_signal(m.chat.id, "15")
+    elif cmd == "30м":
+        process_signal(m.chat.id, "30")
+    elif cmd == "1ч":
+        process_signal(m.chat.id, "60")
+    elif cmd == "Проверка":
+        verify(m.chat.id)
+    elif cmd == "Точность":
+        accuracy(m.chat.id)
+    elif cmd == "Export CSV":
+        export_csv(m)
+    elif cmd == "Export Excel":
+        export_excel(m)
+    else:
+        bot.send_message(m.chat.id, "ℹ️ Используйте клавиатуру.", reply_markup=make_reply_keyboard())
 
-# === Авто‑прогноз ===
-def auto_pred(): ...
+# === Авто‑прогноз 15м ===
+def auto_pred():
+    while True:
+        try:
+            process_signal(AUTHORIZED_USER_ID, "15")
+            time.sleep(900)
+        except:
+            time.sleep(900)
 threading.Thread(target=auto_pred, daemon=True).start()
 
 # === Ежедневный отчёт ===
-def daily_summary(): ...
+last_summary_date = None
+
+def daily_summary():
+    global last_summary_date
+    while True:
+        now = datetime.utcnow()
+        nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time.sleep((nxt - now).total_seconds())
+        ds = (nxt - timedelta(days=1)).strftime("%Y-%m-%d")
+        if ds != last_summary_date:
+            last_summary_date = ds
+            rows = cursor.execute(
+                "SELECT signal,actual FROM predictions WHERE timestamp LIKE ? AND actual IS NOT NULL",
+                (ds+"%",)
+            ).fetchall()
+            tot = len(rows)
+            corr = sum(1 for s,a in rows if s==a)
+            txt = (
+                f"📅 Отчёт за {ds}: Всего {tot}, Попаданий {corr}, Точность {round(corr/tot*100,2)}%"
+                if tot else f"📅 Отчёт за {ds}: нет данных"
+            )
+            bot.send_message(AUTHORIZED_USER_ID, txt)
 threading.Thread(target=daily_summary, daemon=True).start()
 
-# === Запуск ===
+# === Запуск бота ===
 bot.polling(none_stop=True)
