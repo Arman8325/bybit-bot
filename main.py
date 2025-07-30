@@ -46,7 +46,6 @@ def analyze_indicators(df):
     inds = {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
         "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
-        "EMA100": ta.trend.EMAIndicator(df["close"], window=100).ema_indicator().iloc[-1],
         "ADX": ta.trend.ADXIndicator(df["high"], df["low"], df["close"]).adx().iloc[-1],
         "CCI": ta.trend.CCIIndicator(df["high"], df["low"], df["close"]).cci().iloc[-1],
         "Stochastic": ta.momentum.StochasticOscillator(df["high"], df["low"], df["close"]).stoch().iloc[-1],
@@ -116,15 +115,6 @@ def process_signal(chat_id, interval, manual=False):
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind, last)
-
-    # фильтры автозапуска
-    if not manual:
-        if last > ind["EMA100"] and signal != "LONG":
-            return
-        if last < ind["EMA100"] and signal != "SHORT":
-            return
-        if df["volume"].iloc[-1] < 1.5 * ind["VOL_MA20"]:
-            return
 
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
