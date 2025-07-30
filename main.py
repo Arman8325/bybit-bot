@@ -43,7 +43,6 @@ def get_candles(interval="15", limit=100):
 
 def analyze_indicators(df):
     df = df.astype({"close":"float", "high":"float", "low":"float", "volume":"float"})
-    # базовые индикаторы
     inds = {
         "RSI": ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1],
         "EMA21": ta.trend.EMAIndicator(df["close"], window=21).ema_indicator().iloc[-1],
@@ -57,7 +56,6 @@ def analyze_indicators(df):
         "SAR": ta.trend.PSARIndicator(df["high"], df["low"], df["close"]).psar().iloc[-1],
         "MACD": ta.trend.MACD(df["close"]).macd().iloc[-1],
         "WR": ta.momentum.WilliamsRIndicator(df["high"], df["low"], df["close"]).williams_r().iloc[-1],
-        # объёмный фильтр
         "VOL_MA20": df["volume"].rolling(20).mean().iloc[-1]
     }
     return inds
@@ -101,17 +99,15 @@ def make_prediction(ind, last_close):
 
 
 def is_entry_opportunity(ind, last_close, votes):
-    # 100% LONG
     return votes.count("LONG") == len(votes)
 
 # === Обработка сигнала ===
-def process_signal(chat_id, interval):
+def process_signal(chat_id, interval, manual=False):
     data = get_candles(interval=interval)
     df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume","turnover"])
-    # дедупликация по 15‑минутному периоду
+    # дедупликация по периоду
     period = int(interval) * 60
-    last_ts = int(df["timestamp"].iloc[-1])
-    idx = last_ts // period
+    idx = int(df["timestamp"].iloc[-1]) // period
     if last_period.get(interval) == idx:
         return
     last_period[interval] = idx
@@ -121,14 +117,14 @@ def process_signal(chat_id, interval):
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind, last)
 
-    # тренд-фильтр EMA100
-    if last > ind["EMA100"] and signal != "LONG":
-        return
-    if last < ind["EMA100"] and signal != "SHORT":
-        return
-    # объёмный фильтр
-    if df["volume"].iloc[-1] < 1.5 * ind["VOL_MA20"]:
-        return
+    # фильтры автозапуска
+    if not manual:
+        if last > ind["EMA100"] and signal != "LONG":
+            return
+        if last < ind["EMA100"] and signal != "SHORT":
+            return
+        if df["volume"].iloc[-1] < 1.5 * ind["VOL_MA20"]:
+            return
 
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
@@ -137,7 +133,11 @@ def process_signal(chat_id, interval):
     )
     conn.commit()
 
-    text = f"⏱ Таймфрейм: {interval}м\n📈 Закрытие: {last}\n📉 Предыдущее: {prev}\n"
+    text = (
+        f"⏱ Таймфрейм: {interval}м\n"
+        f"📈 Закрытие: {last}\n"
+        f"📉 Предыдущее: {prev}\n"
+    )
     for k, v in ind.items():
         text += f"🔹 {k}: {round(v,2)}\n"
     text += f"\n📌 Прогноз на {interval}м: "
@@ -145,7 +145,7 @@ def process_signal(chat_id, interval):
     text += f"\n🧠 Голоса: {votes}"
     bot.send_message(chat_id, text)
 
-    # вход за 1 мин до смены свечи
+    # авт-точка входа за 1 мин до новой свечи
     now = datetime.utcnow()
     if now.minute % int(interval) == int(interval)-1 and is_entry_opportunity(ind, last, votes):
         entry = (
@@ -154,7 +154,7 @@ def process_signal(chat_id, interval):
         )
         bot.send_message(chat_id, entry, parse_mode="Markdown")
 
-# === Проверка ===
+# === Проверка, точность, экспорт ===
 def verify(chat_id):
     now = datetime.utcnow()
     cursor.execute("SELECT id, timestamp, price FROM predictions WHERE actual IS NULL")
@@ -179,7 +179,7 @@ def accuracy(chat_id):
     correct = sum(1 for s,a in rows if s==a)
     bot.send_message(chat_id, f"✅ Точность: {round(correct/total*100,2)}% ({correct}/{total})")
 
-# === Экспорт CSV/Excel ===
+# === Экспорт ===
 def export_csv(m):
     df = pd.read_sql_query("SELECT * FROM predictions", conn)
     if df.empty:
@@ -217,11 +217,11 @@ def start(m):
 def handler(m):
     cmd = m.text.strip()
     if cmd == "15м":
-        process_signal(m.chat.id, "15")
+        process_signal(m.chat.id, "15", manual=True)
     elif cmd == "30м":
-        process_signal(m.chat.id, "30")
+        process_signal(m.chat.id, "30", manual=True)
     elif cmd == "1ч":
-        process_signal(m.chat.id, "60")
+        process_signal(m.chat.id, "60", manual=True)
     elif cmd == "Проверка":
         verify(m.chat.id)
     elif cmd == "Точность":
@@ -251,7 +251,7 @@ def daily_summary():
     while True:
         now = datetime.utcnow()
         nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((nxt - now).total_seconds())
+        time.sleep((nxt-now).total_seconds())
         ds = (nxt - timedelta(days=1)).strftime("%Y-%m-%d")
         if ds != last_summary_date:
             last_summary_date = ds
@@ -268,5 +268,5 @@ def daily_summary():
             bot.send_message(AUTHORIZED_USER_ID, txt)
 threading.Thread(target=daily_summary, daemon=True).start()
 
-# === Запуск бота ===
+# === Запуск ===
 bot.polling(none_stop=True)
