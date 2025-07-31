@@ -37,9 +37,9 @@ conn.commit()
 
 # === Состояния и дедупликация ===
 last_period = {}
-calc_mode = set()  # множество чатов, ожидающих ввод калькулятора
+calc_mode = set()
 
-# === Утилиты для торговых сигналов ===
+# === Утилиты ===
 def get_candles(interval="15", limit=100):
     return session.get_kline(category="linear", symbol="BTCUSDT", interval=interval, limit=limit)["result"]["list"]
 
@@ -54,146 +54,144 @@ def analyze_indicators(df):
     }
 
 def make_prediction(ind, last):
-    votes = []
-    if ind["RSI"] > 60: votes.append("LONG")
-    elif ind["RSI"] < 40: votes.append("SHORT")
-    votes.append("LONG" if last > ind["EMA21"] else "SHORT")
-    if ind["ADX"] > 25: votes.append("LONG")
-    if ind["CCI"] > 100: votes.append("LONG")
-    elif ind["CCI"] < -100: votes.append("SHORT")
-    lc, sc = votes.count("LONG"), votes.count("SHORT")
-    if lc > sc: return "LONG", votes
-    if sc > lc: return "SHORT", votes
-    return "NEUTRAL", votes
+    votes=[]
+    if ind["RSI"]>60: votes.append("LONG")
+    elif ind["RSI"]<40: votes.append("SHORT")
+    votes.append("LONG" if last>ind["EMA21"] else "SHORT")
+    if ind["ADX"]>25: votes.append("LONG")
+    if ind["CCI"]>100: votes.append("LONG")
+    elif ind["CCI"]<-100: votes.append("SHORT")
+    lc,sc=votes.count("LONG"),votes.count("SHORT")
+    if lc>sc: return "LONG",votes
+    if sc>lc: return "SHORT",votes
+    return "NEUTRAL",votes
 
-def is_entry_opportunity(ind, last, votes):
-    return votes.count("LONG") == len(votes)
+def is_entry_opportunity(ind,last,votes):
+    return votes.count("LONG")==len(votes)
 
-# === Основной обработчик сигнала ===
+# === Основная обработка сигнала ===
 def process_signal(chat_id, interval, manual=False):
-    # 1) сразу базовый прогноз
-    data = get_candles(interval=interval)
-    df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume","turnover"])
-    last = float(df["close"].iloc[-1])
-    prev = float(df["close"].iloc[-2])
-    ind = analyze_indicators(df)
-    signal, votes = make_prediction(ind, last)
-    atr = ind["ATR14"]
-    sl = last - atr if signal=="LONG" else (last+atr if signal=="SHORT" else None)
-    tp = last + 2*atr if signal=="LONG" else (last-2*atr if signal=="SHORT" else None)
+    data=get_candles(interval)
+    df=pd.DataFrame(data,columns=["timestamp","open","high","low","close","volume","turnover"])
+    last=float(df["close"].iloc[-1])
+    prev=float(df["close"].iloc[-2])
+    ind=analyze_indicators(df)
+    signal,votes=make_prediction(ind,last)
+    atr=ind["ATR14"]
+    sl=last-atr if signal=="LONG" else (last+atr if signal=="SHORT" else None)
+    tp=last+2*atr if signal=="LONG" else (last-2*atr if signal=="SHORT" else None)
 
-    # сохраняем
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    # Сохраняем
+    ts=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp,price,signal,actual,votes,timeframe,sl,tp) VALUES (?,?,?,?,?,?,?,?)",
         (ts,last,signal,None,",".join(votes),interval,sl,tp)
     )
     conn.commit()
 
-    # отправляем сразу
-    arrow = "🔺" if signal=="LONG" else "🔻" if signal=="SHORT" else "⚪️"
-    text = (
-        f"⏱ {interval}м   {arrow} {signal}\n"
+    # Отправляем базовый прогноз
+    arrow="🔺" if signal=="LONG" else "🔻" if signal=="SHORT" else "⚪️"
+    text=(
+        f"⏱ Таймфрейм: {interval}м    {arrow} {signal}\n"
         f"📈 {last}  (SL={round(sl,2) if sl else '-'}  TP={round(tp,2) if tp else '-'})\n"
         f"📉 {prev}\n"
         f"🔹 RSI:{round(ind['RSI'],2)}, EMA21:{round(ind['EMA21'],2)}, ATR14:{round(atr,2)}\n"
-        f"🧠 Votes:{votes}"
+        f"🧠 Голоса:{votes}"
     )
-    bot.send_message(chat_id, text)
+    bot.send_message(chat_id,text)
 
-    # 2) если не ручной — привязываем к границе и применяем фильтры
-    if not manual:
-        now = datetime.utcnow()
-        rem = now.minute % int(interval)
-        wait = (int(interval)-rem)*60 - now.second
-        if wait>0:
-            time.sleep(wait)
+    # Если ручной запрос — возвращаемся
+    if manual: return
 
-        # обновим данные после границы
-        df2 = pd.DataFrame(get_candles(interval=interval), columns=df.columns)
-        last2 = float(df2["close"].iloc[-1])
+    # Авто-режим: ждём до границы свечи
+    now=datetime.utcnow()
+    rem=now.minute%int(interval)
+    wait=(int(interval)-rem)*60 - now.second
+    if wait>0: time.sleep(wait)
 
-        # Multi-TF EMA21
-        higher = {"15":"60","30":"240","60":"240"}[interval]
-        hdf = pd.DataFrame(get_candles(interval=higher),
-                           columns=["timestamp","open","high","low","close","volume","turnover"])
-        ind_high = analyze_indicators(hdf)
-        if (signal=="LONG" and last2<ind_high["EMA21"]) or (signal=="SHORT" and last2>ind_high["EMA21"]):
-            return
+    # После границы заново проверяем
+    df2=pd.DataFrame(get_candles(interval),columns=df.columns)
+    last2=float(df2["close"].iloc[-1])
 
-        # ATR-фильтр
-        cr = float(df2["high"].iloc[-1]) - float(df2["low"].iloc[-1])
-        if cr < atr:
-            return
+    # Multi-TF EMA21
+    higher={"15":"60","30":"240","60":"240"}[interval]
+    hdf=pd.DataFrame(get_candles(higher),columns=df.columns)
+    ind_high=analyze_indicators(hdf)
+    if (signal=="LONG" and last2<ind_high["EMA21"]) or (signal=="SHORT" and last2>ind_high["EMA21"]):
+        return
 
-        # Точка входа
-        if is_entry_opportunity(ind, last2, votes):
-            bot.send_message(
-                chat_id,
-                f"🔔 *Точка входа {signal}! SL={round(sl,2)} TP={round(tp,2)}*",
-                parse_mode="Markdown"
-            )
+    # ATR-фильтр
+    cr=float(df2["high"].iloc[-1]) - float(df2["low"].iloc[-1])
+    if cr<atr: return
 
-# === Хендлер калькулятора ===
+    # Точка входа
+    if is_entry_opportunity(ind,last2,votes):
+        bot.send_message(
+            chat_id,
+            f"🔔 *Точка входа {signal}! SL={round(sl,2)} TP={round(tp,2)}*",
+            parse_mode="Markdown"
+        )
+
+# === Авто-предсказания ===
+def auto_pred(interval):
+    while True:
+        process_signal(AUTHORIZED_USER_ID,interval,manual=False)
+        time.sleep(int(interval)*60)
+
+for tf in ["15","30","60"]:
+    threading.Thread(target=lambda tf=tf: auto_pred(tf),daemon=True).start()
+
+# === Калькулятор с плечом ===
 @bot.message_handler(regexp=r"^Калькулятор$")
 def cmd_calc(m):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add("Ввести данные", "Отмена")
+    kb=types.ReplyKeyboardMarkup(resize_keyboard=True,one_time_keyboard=True)
+    kb.add("Ввести данные","Отмена")
     calc_mode.add(m.chat.id)
-    bot.send_message(m.chat.id, "Нажмите «Ввести данные» или «Отмена»", reply_markup=kb)
+    bot.send_message(m.chat.id,"Калькулятор: выберите",reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.chat.id in calc_mode and m.text=="Ввести данные")
 def calc_input(m):
-    bot.send_message(m.chat.id, "Введите: баланс вход цель плечо\n(четыре числа через пробел)")
-    # остаёмся в calc_mode
-
-@bot.message_handler(func=lambda m: m.chat.id in calc_mode and m.text=="Отмена")
+    bot.send_message(m.chat.id,"Введите: баланс вход цель плечо\n(4 числа)")
+@bot.message_handler(func=lambda m:m.chat.id in calc_mode and m.text=="Отмена")
 def calc_cancel(m):
     calc_mode.discard(m.chat.id)
-    bot.send_message(m.chat.id, "Калькулятор отменён", reply_markup=make_reply_keyboard())
+    bot.send_message(m.chat.id,"Калькулятор отменён",reply_markup=make_reply_keyboard())
 
-@bot.message_handler(func=lambda m: m.chat.id in calc_mode)
+@bot.message_handler(func=lambda m:m.chat.id in calc_mode)
 def calc_compute(m):
     try:
-        bal, p0, p1, lev = map(float, m.text.split())
-        pct = (p1-p0)/p0*100
-        usd = bal * lev * pct / 100
-        bot.send_message(m.chat.id, f"При плече {int(lev)}× получите {round(usd,2)} USD (~{round(pct,2)}%)",
+        bal,p0,p1,lev=map(float,m.text.split())
+        pct=(p1-p0)/p0*100
+        usd=bal*lev*pct/100
+        bot.send_message(m.chat.id,f"При плече {int(lev)}×: {round(usd,2)} USD (~{round(pct,2)}%)",
                          reply_markup=make_reply_keyboard())
+        calc_mode.discard(m.chat.id)
     except:
-        bot.send_message(m.chat.id, "Неверные данные, введите четыре числа через пробел")
-        return
-    calc_mode.discard(m.chat.id)
+        bot.send_message(m.chat.id,"Неверный формат, повторите")
 
-# === Клавиатура ===
+# === Клавиатура и команды ===
 def make_reply_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb=types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("15м","30м","1ч")
     kb.row("Проверка","Точность")
     kb.row("Export CSV","Export Excel")
     kb.row("Калькулятор")
     return kb
 
-# === /start ===
 @bot.message_handler(commands=["start"])
 def cmd_start(m):
-    if m.from_user.id!=AUTHORIZED_USER_ID:
-        return bot.send_message(m.chat.id,"⛔ Нет доступа")
     bot.send_message(m.chat.id,"✅ Бот готов!",reply_markup=make_reply_keyboard())
 
-# === Общий хендлер команд ===
 @bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
 def handler(m):
-    # если в калькуляторе — не обрабатывать тут
-    if m.chat.id in calc_mode:
-        return
-    cmd = m.text.strip().lower()
+    if m.chat.id in calc_mode: return
+    cmd=m.text.strip().lower()
     if cmd.startswith("15"):
-        process_signal(m.chat.id, "15", manual=True)
+        process_signal(m.chat.id,"15",manual=True)
     elif cmd.startswith("30"):
-        process_signal(m.chat.id, "30", manual=True)
+        process_signal(m.chat.id,"30",manual=True)
     elif cmd.startswith("1"):
-        process_signal(m.chat.id, "60", manual=True)
+        process_signal(m.chat.id,"60",manual=True)
     elif cmd=="проверка":
         verify(m.chat.id)
     elif cmd=="точность":
@@ -203,19 +201,38 @@ def handler(m):
     elif cmd=="export excel":
         export_excel(m)
     else:
-        bot.send_message(m.chat.id,"ℹ️ Используйте кнопки.",reply_markup=make_reply_keyboard())
+        bot.send_message(m.chat.id,"ℹ️ Используйте кнопки",reply_markup=make_reply_keyboard())
 
-# === Проверка/Точность/Экспорт/Отчёты ===
+# === Проверка/Точность/Экспорт ===
 def verify(chat_id):
-    # ваш код
+    now=datetime.utcnow();cnt=0
+    cursor.execute("SELECT id,timestamp,price FROM predictions WHERE actual IS NULL")
+    for _id,ts,price in cursor.fetchall():
+        dt=datetime.strptime(ts,"%Y-%m-%d %H:%M:%S")
+        if now-dt>=timedelta(minutes=15):
+            nc=float(get_candles("15")[-1][4])
+            actual="LONG" if nc>price else "SHORT" if nc<price else "NEUTRAL"
+            cursor.execute("UPDATE predictions SET actual=? WHERE id=?",(actual,_id))
+            cnt+=1
+    conn.commit();bot.send_message(chat_id,f"🔍 Обновлено: {cnt}")
 
 def accuracy(chat_id):
-    # ваш код
+    cursor.execute("SELECT signal,actual FROM predictions WHERE actual IS NOT NULL")
+    rows=cursor.fetchall()
+    if not rows: return bot.send_message(chat_id,"📊 Нет проверенных")
+    tot=len(rows);corr=sum(1 for s,a in rows if s==a)
+    bot.send_message(chat_id,f"✅ Точность: {round(corr/tot*100,2)}% ({corr}/{tot})")
 
 def export_csv(m):
-    # ваш код
+    df=pd.read_sql_query("SELECT * FROM predictions",conn)
+    if df.empty: return bot.send_message(m.chat.id,"📁 Нет данных")
+    buf=BytesIO();df.to_csv(buf,index=False);buf.seek(0)
+    bot.send_document(m.chat.id,("signals.csv",buf))
 
 def export_excel(m):
-    # ваш код
+    df=pd.read_sql_query("SELECT * FROM predictions",conn)
+    if df.empty: return bot.send_message(m.chat.id,"📁 Нет данных")
+    buf=BytesIO();df.to_excel(buf,index=False,sheet_name="Signals");buf.seek(0)
+    bot.send_document(m.chat.id,("signals.xlsx",buf))
 
 bot.polling(none_stop=True)
