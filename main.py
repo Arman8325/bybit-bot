@@ -37,11 +37,12 @@ conn.commit()
 
 # === Дедупликация уведомлений ===
 last_period = {}
+# Для калькулятора храним состояние ожидания
+user_states = {}
 
 # === Утилиты ===
 def get_candles(interval="15", limit=100):
     return session.get_kline(category="linear", symbol="BTCUSDT", interval=interval, limit=limit)["result"]["list"]
-
 
 def analyze_indicators(df):
     df = df.astype({"close":"float", "high":"float", "low":"float", "volume":"float"})
@@ -73,16 +74,13 @@ def make_prediction(ind, last):
         return "SHORT", votes
     return "NEUTRAL", votes
 
-# === Проверка точки входа 100% ===
 def is_entry_opportunity(ind, last, votes):
     return votes.count("LONG") == len(votes)
 
 # === Обработка сигнала ===
 def process_signal(chat_id, interval, manual=False):
-    # 15m/30m/60m data
     data = get_candles(interval=interval)
     df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume","turnover"])
-    # дедупликация (авто)
     period = int(interval) * 60
     idx = int(df["timestamp"].iloc[-1]) // period
     if not manual and last_period.get(interval) == idx:
@@ -90,33 +88,27 @@ def process_signal(chat_id, interval, manual=False):
     if not manual:
         last_period[interval] = idx
 
-    # индикаторы текущего ТФ
     ind_cur = analyze_indicators(df)
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind_cur, last)
 
-    # multi-TF: определяем старший ТФ для проверки EMA21
-    higher_map = {"15": "60", "30": "240", "60": "240"}
+    higher_map = {"15":"60", "30":"240", "60":"240"}
     higher_tf = higher_map.get(interval)
-    if higher_tf:
+    if higher_tf and not manual:
         hdata = get_candles(interval=higher_tf)
         hdf = pd.DataFrame(hdata, columns=["timestamp","open","high","low","close","volume","turnover"])
         ind_high = analyze_indicators(hdf)
-        # проверяем направление по EMA21 старшего ТФ
-        if not manual:
-            if signal == "LONG" and last < ind_high["EMA21"]:
-                return
-            if signal == "SHORT" and last > ind_high["EMA21"]:
-                return
+        if signal == "LONG" and last < ind_high["EMA21"]:
+            return
+        if signal == "SHORT" and last > ind_high["EMA21"]:
+            return
 
-    # ATR фильтр (авто)
     if not manual:
         candle_range = df["high"].iloc[-1] - df["low"].iloc[-1]
         if candle_range < ind_cur["ATR14"]:
             return
 
-    # рассчитываем SL/TP
     atr = ind_cur["ATR14"]
     if signal == "LONG":
         sl = last - atr
@@ -127,7 +119,6 @@ def process_signal(chat_id, interval, manual=False):
     else:
         sl = tp = None
 
-    # сохраняем в БД
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe, sl, tp) VALUES (?,?,?,?,?,?,?,?)",
@@ -135,32 +126,57 @@ def process_signal(chat_id, interval, manual=False):
     )
     conn.commit()
 
-    # формируем сообщение
-    text = f"⏱ Таймфрейм: {interval}м
-"
-    text += f"📈 Закрытие: {last}  (SL={round(sl,2) if sl else '-'}, TP={round(tp,2) if tp else '-'})
-"
-    text += f"📉 Предыдущее: {prev}
-"
-    text += f"🔹 RSI: {round(ind_cur['RSI'],2)}, EMA21: {round(ind_cur['EMA21'],2)}
-"
+    text = f"⏱ Таймфрейм: {interval}м\n"
+    text += f"📈 Закрытие: {last}  (SL={round(sl,2) if sl else '-'}, TP={round(tp,2) if tp else '-'})\n"
+    text += f"📉 Предыдущее: {prev}\n"
+    text += f"🔹 RSI: {round(ind_cur['RSI'],2)}, EMA21: {round(ind_cur['EMA21'],2)}\n"
     if higher_tf:
-        text += f"🔹 High TФ {higher_tf}м EMA21: {round(ind_high['EMA21'],2)}
-"
-    text += f"🔹 ATR14: {round(atr,2)}
-"
-    text += f"
-📌 Прогноз: {('🔺 LONG' if signal=='LONG' else '🔻 SHORT' if signal=='SHORT' else '⚪️ NEUTRAL')}
-"
-    text += f"🧠 Голоса: {votes}
-"
+        text += f"🔹 Старший ТФ {higher_tf}м EMA21: {round(ind_high['EMA21'],2)}\n"
+    text += f"🔹 ATR14: {round(atr,2)}\n"
+    text += f"\n📌 Прогноз: {('🔺 LONG' if signal=='LONG' else '🔻 SHORT' if signal=='SHORT' else '⚪️ NEUTRAL')}\n"
+    text += f"🧠 Голоса: {votes}\n"
     bot.send_message(chat_id, text)
 
-    # вход за 1 мин до смены свечи
     now = datetime.utcnow()
     if now.minute % int(interval) == int(interval)-1 and is_entry_opportunity(ind_cur, last, votes):
         entry = f"🔔 *Точка входа {signal}! SL={round(sl,2) if sl else '-'} TP={round(tp,2) if tp else '-'}*"
         bot.send_message(chat_id, entry, parse_mode="Markdown")
 
-# === Остальной код без изменений ===
-bot.polling(none_stop=True)(none_stop=True)
+# === Калькулятор прибыли с плечом ===
+@bot.message_handler(regexp=r"^Калькулятор$")
+def start_calculator(m):
+    if m.from_user.id != AUTHORIZED_USER_ID:
+        return
+    user_states[m.chat.id] = 'await_calc'
+    bot.send_message(
+        m.chat.id,
+        "Введите баланс, цену входа, цену цели и плечо через пробел, например:
+`100 20000 20100 10`"
+        , parse_mode="Markdown"
+    )
+
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id)=='await_calc')
+def calculator(m):
+    try:
+        parts = m.text.split()
+        if len(parts) != 4:
+            raise ValueError
+        bal, price_in, price_tp, lev = parts
+        bal = float(bal)
+        price_in = float(price_in)
+        price_tp = float(price_tp)
+        lev = float(lev)
+        profit_pct = (price_tp - price_in) / price_in * 100
+        profit_usd = bal * lev * profit_pct / 100
+        bot.send_message(
+            m.chat.id,
+            f"При плече {int(lev)}×: Прибыль составит {round(profit_usd,2)} USD (~{round(profit_pct,2)}%)"
+        )
+    except:
+        bot.send_message(m.chat.id, "Неверный формат. Введите четыре числа через пробел: баланс, цена входа, цена цели, плечо.")
+        return
+    user_states.pop(m.chat.id, None)
+
+# === Остальные функции и хендлеры (Проверка, Точность, Экспорт, кнопки) остаются без изменений === (Проверка, Точность, Экспорт, кнопки) остаются без изменений ===
+
+bot.polling(none_stop=True)
