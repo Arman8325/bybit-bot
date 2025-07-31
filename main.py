@@ -92,12 +92,13 @@ def process_signal(chat_id, interval, manual=False):
     if not manual:
         last_period[interval] = idx
 
+    # Текущий ТФ индикаторы
     ind_cur = analyze_indicators(df)
     last = float(df["close"].iloc[-1])
     prev = float(df["close"].iloc[-2])
     signal, votes = make_prediction(ind_cur, last)
 
-    # Мульти-ТФ проверка EMA21
+    # Multi-TF проверка EMA21
     higher_map = {"15": "60", "30": "240", "60": "240"}
     higher_tf = higher_map.get(interval)
     if higher_tf and not manual:
@@ -126,7 +127,7 @@ def process_signal(chat_id, interval, manual=False):
     else:
         sl = tp = None
 
-    # Сохранение
+    # Сохранение в БД
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
         "INSERT INTO predictions (timestamp, price, signal, actual, votes, timeframe, sl, tp) VALUES (?,?,?,?,?,?,?,?)",
@@ -134,7 +135,7 @@ def process_signal(chat_id, interval, manual=False):
     )
     conn.commit()
 
-    # Формирование и отправка сообщения
+    # Формирование сообщения
     text = f"⏱ Таймфрейм: {interval}м\n"
     text += f"📈 Закрытие: {last}  (SL={round(sl,2) if sl else '-'}, TP={round(tp,2) if tp else '-'})\n"
     text += f"📉 Предыдущее: {prev}\n"
@@ -146,7 +147,7 @@ def process_signal(chat_id, interval, manual=False):
     text += f"🧠 Голоса: {votes}\n"
     bot.send_message(chat_id, text)
 
-    # Точка входа за минуту до новой свечи
+    # Точка входа за минуту до смены свечи
     now = datetime.utcnow()
     if now.minute % int(interval) == int(interval)-1 and is_entry_opportunity(ind_cur, last, votes):
         entry = f"🔔 *Точка входа {signal}! SL={round(sl,2) if sl else '-'} TP={round(tp,2) if tp else '-'}*"
@@ -171,10 +172,7 @@ def calculator(m):
         if len(parts) != 4:
             raise ValueError
         bal, price_in, price_tp, lev = parts
-        bal = float(bal)
-        price_in = float(price_in)
-        price_tp = float(price_tp)
-        lev = float(lev)
+        bal, price_in, price_tp, lev = map(float, (bal, price_in, price_tp, lev))
         profit_pct = (price_tp - price_in) / price_in * 100
         profit_usd = bal * lev * profit_pct / 100
         bot.send_message(
@@ -186,47 +184,38 @@ def calculator(m):
         return
     user_states.pop(m.chat.id, None)
 
-# === Хендлеры основных команд ===
-def make_reply_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("15м", "30м", "1ч")
-    kb.row("Проверка", "Точность")
-    kb.row("Export CSV", "Export Excel")
-    kb.row("Калькулятор")
-    return kb
+# === Основной хендлер команд ===
+@bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
+def handler(m):
+    # сброс состояния калькулятора
+    user_states.pop(m.chat.id, None)
+    cmd = m.text.strip().lower()
 
+    if cmd.startswith("15"):
+        process_signal(m.chat.id, "15", manual=True)
+    elif cmd.startswith("30"):
+        process_signal(m.chat.id, "30", manual=True)
+    elif cmd.startswith("1"):
+        process_signal(m.chat.id, "60", manual=True)
+    elif cmd == "проверка":
+        verify(m.chat.id)
+    elif cmd == "точность":
+        accuracy(m.chat.id)
+    elif cmd == "export csv":
+        export_csv(m)
+    elif cmd == "export excel":
+        export_excel(m)
+    elif cmd == "калькулятор":
+        start_calculator(m)
+    else:
+        bot.send_message(m.chat.id, "ℹ️ Используйте кнопки на клавиатуре.", reply_markup=make_reply_keyboard())
+
+# === Команда /start ===
 @bot.message_handler(commands=['start'])
 def start(m):
     if m.from_user.id != AUTHORIZED_USER_ID:
         return bot.send_message(m.chat.id, "⛔ У вас нет доступа.")
     bot.send_message(m.chat.id, "✅ Бот запущен!", reply_markup=make_reply_keyboard())
-
-@bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
-def handler(m):
-    # Сбросим состояние калькулятора, если оно было
-    user_states.pop(m.chat.id, None)
-    cmd = m.text.strip()
-    # сброс состояния калькулятора при нажатии любых кнопок
-    user_states.pop(m.chat.id, None)
-    cmd = m.text.strip()
-    if cmd == "15м":
-        process_signal(m.chat.id, "15", manual=True)
-    elif cmd == "30м":
-        process_signal(m.chat.id, "30", manual=True)
-    elif cmd == "1ч":
-        process_signal(m.chat.id, "60", manual=True)
-    elif cmd == "Проверка":
-        verify(m.chat.id)
-    elif cmd == "Точность":
-        accuracy(m.chat.id)
-    elif cmd == "Export CSV":
-        export_csv(m)
-    elif cmd == "Export Excel":
-        export_excel(m)
-    elif cmd == "Калькулятор":
-        start_calculator(m)
-    else:
-        bot.send_message(m.chat.id, "ℹ️ Используйте клавиатуру.", reply_markup=make_reply_keyboard())
 
 # === Проверка и точность ===
 def verify(chat_id):
@@ -270,6 +259,15 @@ def export_excel(m):
     df.to_excel(buf, index=False, sheet_name="Signals")
     buf.seek(0)
     bot.send_document(m.chat.id, ("signals.xlsx", buf))
+
+# === Кнопки клавиатуры ===
+def make_reply_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("15м", "30м", "1ч")
+    kb.row("Проверка", "Точность")
+    kb.row("Export CSV", "Export Excel")
+    kb.row("Калькулятор")
+    return kb
 
 # === Авто-прогноз 15м ===
 def auto_pred():
