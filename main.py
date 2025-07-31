@@ -1,13 +1,10 @@
 import os
 import logging
-from datetime import datetime
 import pandas as pd
 from telebot import TeleBot, types
 from pybit.unified_trading import HTTP
-
-# индикаторы
 from ta.momentum import RSIIndicator, StochasticOscillator, StochRSIIndicator
-from ta.trend import EMAIndicator, ADXIndicator, KDJIndicator
+from ta.trend import EMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, SARIndicator
 from ta.volume import OnBalanceVolumeIndicator, MoneyFlowIndexIndicator
 from ta.others import CCIIndicator, WilliamsRIndicator
@@ -18,32 +15,16 @@ BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 
-# инициализируем V5-клиент
-bybit = HTTP(
-    testnet=False,
-    api_key=BYBIT_API_KEY,
-    api_secret=BYBIT_API_SECRET
-)
-bot = TeleBot(TELEGRAM_TOKEN)
+bybit = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
+bot   = TeleBot(TELEGRAM_TOKEN)
 
 # ---------- Утилиты ----------
 def fetch_ohlcv(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
-    """
-    В V5 метод называется get_kline.
-    category по умолчанию 'linear' (USDT-контракты).
-    """
-    resp = bybit.get_kline(
-        category="linear",
-        symbol=symbol,
-        interval=interval,
-        limit=limit
-    )
-    data = resp["result"]["list"]  # список свечей
+    resp = bybit.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
+    data = resp["result"]["list"]
     df = pd.DataFrame(data)
-    # в V5 ключ называется 'start' в миллисекундах
     df['timestamp'] = pd.to_datetime(df['start'], unit='ms')
-    df[['open','high','low','close','volume']] = \
-        df[['open','high','low','volume','volume']].astype(float)
+    df[['open','high','low','close','volume']] = df[['open','high','low','volume','volume']].astype(float)
     return df[['timestamp','open','high','low','close','volume']]
 
 def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
@@ -93,46 +74,37 @@ def btn_signal(msg: types.Message):
     mapping = {1:"LONG",0:"NEUTRAL",-1:"SHORT"}
     final = mapping[s4] if (s4 == sD and s4 != 0) else "NEUTRAL"
 
-    bot.reply_to(
-        msg,
+    bot.reply_to(msg,
         f"4h: {mapping[s4]}\n"
         f"1d: {mapping[sD]}\n"
         f"Final: {final}"
     )
 
-    # Сохраняем в CSV историю сигналов
-    df_out = pd.DataFrame([{
+    # сохраняем
+    out = pd.DataFrame([{
         'timestamp': raw4.index[-1],
         'sig_4h': mapping[s4],
         'sig_1d': mapping[sD],
         'final': final
     }])
-    df_out.to_csv('Signals.csv', mode='a',
-                  header=not os.path.exists('Signals.csv'),
-                  index=False)
+    out.to_csv('Signals.csv', mode='a', header=not os.path.exists('Signals.csv'), index=False)
 
 @bot.message_handler(func=lambda m: m.text == "📊 Accuracy")
 def btn_accuracy(msg: types.Message):
     if not os.path.exists('Signals.csv'):
-        return bot.reply_to(msg, "Нет файла Signals.csv.")
+        return bot.reply_to(msg, "Нет Signals.csv.")
     df = pd.read_csv('Signals.csv', parse_dates=['timestamp'])
-    total = len(df)
-    wins  = df['final'].isin(['LONG','SHORT']).sum()
-    pct   = wins/total*100 if total else 0
-    bot.reply_to(
-        msg,
-        f"Всего сигналов: {total}\n"
-        f"Активных: {wins}\n"
-        f"Точность: {pct:.2f}%"
-    )
+    total = len(df); wins = df['final'].isin(['LONG','SHORT']).sum()
+    pct = wins/total*100 if total else 0
+    bot.reply_to(msg, f"Всего: {total}\nАктивных: {wins}\nТочность: {pct:.2f}%")
 
 @bot.message_handler(func=lambda m: m.text == "📤 Export")
 def btn_export(msg: types.Message):
     if not os.path.exists('Signals.csv'):
-        return bot.reply_to(msg, "Signals.csv не найден.")
+        return bot.reply_to(msg, "Нет Signals.csv.")
     df = pd.read_csv('Signals.csv', parse_dates=['timestamp'])
     df.to_excel('Signals.xlsx', index=False)
-    bot.reply_to(msg, "Экспорт готов: Signals.xlsx")
+    bot.reply_to(msg, "Signals.xlsx готов.")
 
 @bot.message_handler(func=lambda m: m.text.startswith("🧮") or m.text.startswith("/calc"))
 def btn_calc(msg: types.Message):
@@ -145,6 +117,5 @@ def btn_calc(msg: types.Message):
     except Exception as e:
         bot.reply_to(msg, f"Ошибка: {e}")
 
-# ---------- Запуск ----------
 if __name__ == '__main__':
     bot.infinity_polling()
