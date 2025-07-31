@@ -203,6 +203,8 @@ def start(m):
 
 @bot.message_handler(func=lambda m: m.chat.id==AUTHORIZED_USER_ID)
 def handler(m):
+    # сброс состояния калькулятора при нажатии любых кнопок
+    user_states.pop(m.chat.id, None)
     cmd = m.text.strip()
     if cmd == "15м":
         process_signal(m.chat.id, "15", manual=True)
