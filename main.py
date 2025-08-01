@@ -6,11 +6,11 @@ from pybit.unified_trading import HTTP
 from ta.momentum import RSIIndicator, StochasticOscillator, StochRSIIndicator
 from ta.trend import EMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator, MoneyFlowIndexIndicator
+from ta.volume import OnBalanceVolumeIndicator
 from ta.others import CCIIndicator, WilliamsRIndicator
 
-# ---------- Настройка ----------
 logging.basicConfig(level=logging.INFO)
+
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
@@ -18,20 +18,33 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 bybit = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 bot   = TeleBot(TELEGRAM_TOKEN)
 
-# ---------- Утилиты ----------
 def fetch_ohlcv(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
-    resp = bybit.get_kline(
-        category="linear",
-        symbol=symbol,
-        interval=interval,
-        limit=limit
-    )
+    resp = bybit.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     data = resp["result"]["list"]
     df = pd.DataFrame(data)
     df['timestamp'] = pd.to_datetime(df['start'], unit='ms')
-    df[['open','high','low','close','volume']] = \
-        df[['open','high','low','volume','volume']].astype(float)
+    df[['open','high','low','close','volume']] = df[['open','high','low','volume','volume']].astype(float)
     return df[['timestamp','open','high','low','close','volume']]
+
+def calculate_mfi(df, window=14):
+    """Ручной расчёт Money Flow Index."""
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    money_flow = typical_price * df['volume']
+    positive_flow = [0]
+    negative_flow = [0]
+
+    for i in range(1, len(df)):
+        if typical_price.iloc[i] > typical_price.iloc[i-1]:
+            positive_flow.append(money_flow.iloc[i])
+            negative_flow.append(0)
+        else:
+            positive_flow.append(0)
+            negative_flow.append(money_flow.iloc[i])
+
+    pos_mf = pd.Series(positive_flow).rolling(window).sum()
+    neg_mf = pd.Series(negative_flow).rolling(window).sum()
+    mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-9)))
+    return mfi
 
 def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
     df['rsi']     = RSIIndicator(df['close'], window=14).rsi()
@@ -45,7 +58,7 @@ def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_low']  = bb.bollinger_lband()
     df['atr']     = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
     df['obv']     = OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
-    df['mfi']     = MoneyFlowIndexIndicator(df['high'], df['low'], df['close'], df['volume'], window=14).money_flow_index()
+    df['mfi']     = calculate_mfi(df, window=14)
     df['wr']      = WilliamsRIndicator(df['high'], df['low'], df['close'], lbp=14).wr()
 
     raw = pd.DataFrame({'timestamp': df['timestamp']})
@@ -74,12 +87,11 @@ def weighted_signal(raw: pd.DataFrame, weights: dict) -> pd.Series:
         return 1 if score/total>0 else (-1 if score/total<0 else 0)
     return raw.apply(vote, axis=1)
 
-# ---------- Меню и хендлеры ----------
 @bot.message_handler(commands=['start'])
 def cmd_start(msg: types.Message):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📈 Signal 4h/1d", "📊 Accuracy", "📤 Export", "🧮 Calc")
-    bot.send_message(msg.chat.id, "Выберите действие:", reply_markup=kb)
+    kb.add("📈 Signal 4h/1d", "📊 Accuracy")
+    bot.send_message(msg.chat.id, "Привет! Выберите действие:", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "📈 Signal 4h/1d")
 def btn_signal(msg: types.Message):
@@ -94,34 +106,6 @@ def btn_signal(msg: types.Message):
     bot.reply_to(msg, f"4h: {mapping[s4]}\n1d: {mapping[sD]}\nFinal: {final}")
     df_out = pd.DataFrame([{'timestamp': raw4.index[-1],'sig_4h':mapping[s4],'sig_1d':mapping[sD],'final':final}])
     df_out.to_csv('Signals.csv', mode='a', header=not os.path.exists('Signals.csv'), index=False)
-
-@bot.message_handler(func=lambda m: m.text == "📊 Accuracy")
-def btn_accuracy(msg: types.Message):
-    if not os.path.exists('Signals.csv'):
-        return bot.reply_to(msg, "Нет Signals.csv.")
-    df = pd.read_csv('Signals.csv', parse_dates=['timestamp'])
-    total = len(df); wins = df['final'].isin(['LONG','SHORT']).sum()
-    pct = wins/total*100 if total else 0
-    bot.reply_to(msg, f"Всего: {total}\nАктивных: {wins}\nТочность: {pct:.2f}%")
-
-@bot.message_handler(func=lambda m: m.text == "📤 Export")
-def btn_export(msg: types.Message):
-    if not os.path.exists('Signals.csv'):
-        return bot.reply_to(msg, "Нет Signals.csv.")
-    df = pd.read_csv('Signals.csv', parse_dates=['timestamp'])
-    df.to_excel('Signals.xlsx', index=False)
-    bot.reply_to(msg, "Signals.xlsx готов.")
-
-@bot.message_handler(func=lambda m: m.text.startswith("🧮") or m.text.startswith("/calc"))
-def btn_calc(msg: types.Message):
-    expr = msg.text.replace("🧮","").replace("/calc","").strip()
-    if not expr:
-        return bot.reply_to(msg, "Введите выражение.")
-    try:
-        res = eval(expr, {"__builtins__":None}, {})
-        bot.reply_to(msg, f"Результат: {res}")
-    except Exception as e:
-        bot.reply_to(msg, f"Ошибка: {e}")
 
 if __name__ == '__main__':
     bot.infinity_polling()
