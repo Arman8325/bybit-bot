@@ -7,7 +7,6 @@ from ta.momentum import RSIIndicator, StochasticOscillator, StochRSIIndicator
 from ta.trend import EMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
-from ta.others import CCIIndicator, WilliamsRIndicator
 
 logging.basicConfig(level=logging.INFO)
 
@@ -18,6 +17,37 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 bybit = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 bot   = TeleBot(TELEGRAM_TOKEN)
 
+# ---------- Расчёты вручную ----------
+def calculate_cci(df, window=20):
+    tp = (df['high'] + df['low'] + df['close']) / 3
+    sma = tp.rolling(window).mean()
+    mad = (tp - sma).abs().rolling(window).mean()
+    cci = (tp - sma) / (0.015 * mad)
+    return cci
+
+def calculate_wr(df, window=14):
+    highest_high = df['high'].rolling(window).max()
+    lowest_low = df['low'].rolling(window).min()
+    wr = -100 * ((highest_high - df['close']) / (highest_high - lowest_low + 1e-9))
+    return wr
+
+def calculate_mfi(df, window=14):
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    money_flow = typical_price * df['volume']
+    pos_flow, neg_flow = [0], [0]
+    for i in range(1, len(df)):
+        if typical_price.iloc[i] > typical_price.iloc[i-1]:
+            pos_flow.append(money_flow.iloc[i])
+            neg_flow.append(0)
+        else:
+            pos_flow.append(0)
+            neg_flow.append(money_flow.iloc[i])
+    pos_mf = pd.Series(pos_flow).rolling(window).sum()
+    neg_mf = pd.Series(neg_flow).rolling(window).sum()
+    mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-9)))
+    return mfi
+
+# ---------- Утилиты ----------
 def fetch_ohlcv(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
     resp = bybit.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
     data = resp["result"]["list"]
@@ -26,31 +56,11 @@ def fetch_ohlcv(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
     df[['open','high','low','close','volume']] = df[['open','high','low','volume','volume']].astype(float)
     return df[['timestamp','open','high','low','close','volume']]
 
-def calculate_mfi(df, window=14):
-    """Ручной расчёт Money Flow Index."""
-    typical_price = (df['high'] + df['low'] + df['close']) / 3
-    money_flow = typical_price * df['volume']
-    positive_flow = [0]
-    negative_flow = [0]
-
-    for i in range(1, len(df)):
-        if typical_price.iloc[i] > typical_price.iloc[i-1]:
-            positive_flow.append(money_flow.iloc[i])
-            negative_flow.append(0)
-        else:
-            positive_flow.append(0)
-            negative_flow.append(money_flow.iloc[i])
-
-    pos_mf = pd.Series(positive_flow).rolling(window).sum()
-    neg_mf = pd.Series(negative_flow).rolling(window).sum()
-    mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-9)))
-    return mfi
-
 def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
     df['rsi']     = RSIIndicator(df['close'], window=14).rsi()
     df['ema21']   = EMAIndicator(df['close'], window=21).ema_indicator()
     df['adx']     = ADXIndicator(df['high'], df['low'], df['close'], window=14).adx()
-    df['cci']     = CCIIndicator(df['high'], df['low'], df['close'], window=20).cci()
+    df['cci']     = calculate_cci(df, 20)
     df['stoch']   = StochasticOscillator(df['high'], df['low'], df['close'], window=14).stoch()
     df['stochrsi']= StochRSIIndicator(df['close'], window=14).stochrsi()
     bb = BollingerBands(df['close'], window=20)
@@ -59,7 +69,7 @@ def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
     df['atr']     = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
     df['obv']     = OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
     df['mfi']     = calculate_mfi(df, window=14)
-    df['wr']      = WilliamsRIndicator(df['high'], df['low'], df['close'], lbp=14).wr()
+    df['wr']      = calculate_wr(df, 14)
 
     raw = pd.DataFrame({'timestamp': df['timestamp']})
     raw['RSI']     = df['rsi'].apply(lambda x: 1 if x<30 else (-1 if x>70 else 0))
@@ -82,11 +92,11 @@ def weighted_signal(raw: pd.DataFrame, weights: dict) -> pd.Series:
         for ind, w in weights.items():
             score += row[ind] * w
             total += w
-        if total == 0:
-            return 0
+        if total == 0: return 0
         return 1 if score/total>0 else (-1 if score/total<0 else 0)
     return raw.apply(vote, axis=1)
 
+# ---------- Бот ----------
 @bot.message_handler(commands=['start'])
 def cmd_start(msg: types.Message):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -104,8 +114,6 @@ def btn_signal(msg: types.Message):
     mapping = {1:"LONG",0:"NEUTRAL",-1:"SHORT"}
     final = mapping[s4] if (s4==sD and s4!=0) else "NEUTRAL"
     bot.reply_to(msg, f"4h: {mapping[s4]}\n1d: {mapping[sD]}\nFinal: {final}")
-    df_out = pd.DataFrame([{'timestamp': raw4.index[-1],'sig_4h':mapping[s4],'sig_1d':mapping[sD],'final':final}])
-    df_out.to_csv('Signals.csv', mode='a', header=not os.path.exists('Signals.csv'), index=False)
 
 if __name__ == '__main__':
     bot.infinity_polling()
