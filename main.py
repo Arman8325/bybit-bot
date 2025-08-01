@@ -14,6 +14,12 @@ BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 
+print("DEBUG: TELEGRAM_TOKEN =", TELEGRAM_TOKEN)
+print("DEBUG: BYBIT_API_KEY =", BYBIT_API_KEY)
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN не найден! Проверьте .env или переменные окружения.")
+
 bybit = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_API_SECRET)
 bot   = TeleBot(TELEGRAM_TOKEN)
 
@@ -22,30 +28,25 @@ def calculate_cci(df, window=20):
     tp = (df['high'] + df['low'] + df['close']) / 3
     sma = tp.rolling(window).mean()
     mad = (tp - sma).abs().rolling(window).mean()
-    cci = (tp - sma) / (0.015 * mad)
-    return cci
+    return (tp - sma) / (0.015 * mad)
 
 def calculate_wr(df, window=14):
     highest_high = df['high'].rolling(window).max()
     lowest_low = df['low'].rolling(window).min()
-    wr = -100 * ((highest_high - df['close']) / (highest_high - lowest_low + 1e-9))
-    return wr
+    return -100 * ((highest_high - df['close']) / (highest_high - lowest_low + 1e-9))
 
 def calculate_mfi(df, window=14):
-    typical_price = (df['high'] + df['low'] + df['close']) / 3
-    money_flow = typical_price * df['volume']
-    pos_flow, neg_flow = [0], [0]
+    tp = (df['high'] + df['low'] + df['close']) / 3
+    mf = tp * df['volume']
+    pos, neg = [0], [0]
     for i in range(1, len(df)):
-        if typical_price.iloc[i] > typical_price.iloc[i-1]:
-            pos_flow.append(money_flow.iloc[i])
-            neg_flow.append(0)
+        if tp.iloc[i] > tp.iloc[i-1]:
+            pos.append(mf.iloc[i]); neg.append(0)
         else:
-            pos_flow.append(0)
-            neg_flow.append(money_flow.iloc[i])
-    pos_mf = pd.Series(pos_flow).rolling(window).sum()
-    neg_mf = pd.Series(neg_flow).rolling(window).sum()
-    mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-9)))
-    return mfi
+            pos.append(0); neg.append(mf.iloc[i])
+    pos_mf = pd.Series(pos).rolling(window).sum()
+    neg_mf = pd.Series(neg).rolling(window).sum()
+    return 100 - (100 / (1 + pos_mf / (neg_mf + 1e-9)))
 
 # ---------- Утилиты ----------
 def fetch_ohlcv(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
@@ -83,7 +84,6 @@ def generate_raw(df: pd.DataFrame) -> pd.DataFrame:
     raw['OBV']     = df['obv'].diff().apply(lambda x: 1 if x>0 else (-1 if x<0 else 0))
     raw['MFI']     = df['mfi'].apply(lambda x: 1 if x<30 else (-1 if x>70 else 0))
     raw['WR']      = df['wr'].apply(lambda x: 1 if x<-80 else (-1 if x>-20 else 0))
-
     return raw.set_index('timestamp')
 
 def weighted_signal(raw: pd.DataFrame, weights: dict) -> pd.Series:
@@ -115,5 +115,21 @@ def btn_signal(msg: types.Message):
     final = mapping[s4] if (s4==sD and s4!=0) else "NEUTRAL"
     bot.reply_to(msg, f"4h: {mapping[s4]}\n1d: {mapping[sD]}\nFinal: {final}")
 
+@bot.message_handler(func=lambda m: m.text == "📊 Accuracy")
+def btn_accuracy(msg: types.Message):
+    if not os.path.exists('Signals.csv'):
+        return bot.reply_to(msg, "Нет Signals.csv.")
+    df = pd.read_csv('Signals.csv', parse_dates=['timestamp'])
+    total = len(df)
+    wins = df['final'].isin(['LONG','SHORT']).sum()
+    pct = wins/total*100 if total else 0
+    bot.reply_to(msg, f"Всего сигналов: {total}\nАктивных: {wins}\nТочность: {pct:.2f}%")
+
 if __name__ == '__main__':
-    bot.infinity_polling()
+    print("✅ Запуск бота...")
+    try:
+        me = bot.get_me()
+        print("✅ Подключение к Telegram успешно:", me)
+    except Exception as e:
+        print("❌ Ошибка подключения к Telegram:", e)
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
