@@ -1,25 +1,32 @@
 import os
-import logging
-import pandas as pd
-from dotenv import load_dotenv  # <--- добавляем
-
+from dotenv import load_dotenv
 from telebot import TeleBot, types
-from pybit.unified_trading import HTTP
-from ta.momentum import RSIIndicator, StochasticOscillator, StochRSIIndicator
-from ta.trend import EMAIndicator, ADXIndicator
-from ta.volatility import BollingerBands, AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator
 
-# загрузка .env
-load_dotenv()
+# Загружаем .env (укажите путь при необходимости)
+load_dotenv(dotenv_path="/mnt/data/NNV/.env")
 
-logging.basicConfig(level=logging.INFO)
-
-BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+# Пробуем получить токен
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "7725284250:AAG7a-apzzqkoQCa1RGO0g10Y2lZB36LXYc"
 
 print("DEBUG: TELEGRAM_TOKEN =", TELEGRAM_TOKEN)
-print("DEBUG: BYBIT_API_KEY =", BYBIT_API_KEY)
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден! Проверьте .env")
+
+# Запуск бота
 bot = TeleBot(TELEGRAM_TOKEN)
+
+@bot.message_handler(commands=['start'])
+def cmd_start(msg: types.Message):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("✅ Test Button")
+    bot.send_message(msg.chat.id, "Привет! Бот запущен ✅", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "✅ Test Button")
+def test_button(msg: types.Message):
+    bot.reply_to(msg, "Кнопка работает! 🎉")
+
+if __name__ == '__main__':
+    print("✅ Бот запущен, ждёт сообщений...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+
